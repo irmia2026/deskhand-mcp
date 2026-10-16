@@ -140,7 +140,10 @@ async def _resolve_target_point(target: str, window: str = "") -> dict:
                     return {"x": cx, "y": cy, "source": "memory", "win": win,
                             "shot": None, "hits": rec.get("hits", 0)}
         if bool(_cfg("ocr_enabled", True)) and ocr.available():
-            hit = ocr.find_text(ocr.recognize(shot), target)
+            # OCR 内部用 asyncio.run（WinRT），必须在 desktop 线程执行，
+            # 不能在 server 事件循环线程直接调
+            items = await desktop.run(ocr.recognize, shot)
+            hit = ocr.find_text(items, target)
             if hit:
                 return {"x": bbox[0] + hit["cx"], "y": bbox[1] + hit["cy"],
                         "source": "ocr", "win": win, "shot": None}
@@ -796,6 +799,16 @@ async def click(target: str = "", element: str = "",
     win = r.get("win")
     bbox = _win_bbox(win)
 
+    # 窗口不在前台时真实鼠标点击会落错窗口（点到覆盖物）——如实告警
+    focus_warning = None
+    if win is not None and r["source"] != "coords":
+        fg = await desktop.run(desktop.foreground_window)
+        if fg and fg.get("hwnd") != win.get("hwnd"):
+            focus_warning = (
+                f"目标窗口「{win.get('title', '')[:20]}」当前不在前台"
+                f"（前台是「{(fg or {}).get('title', '')[:20]}」），"
+                f"真实点击可能落在覆盖窗口上；建议先 click 该窗口任一元素或 window_action(action='focus')")
+
     before = await desktop.run(desktop.screenshot, bbox)
     await desktop.run(inp.click, px, py, button, double)
     diff = await _post_action_diff(before, bbox)
@@ -818,6 +831,7 @@ async def click(target: str = "", element: str = "",
         "locate_source": r["source"],
         "landing_check": "skipped",
         "relocated": relocated,
+        "focus_warning": focus_warning,
         "effective": ok,
         "verdict": verdict,
         "verdict_text": verdict_text,
