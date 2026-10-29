@@ -33,11 +33,14 @@ def _resolve_target(win, element=None, target="", x=None, y=None) -> dict:
         el = scene.resolve(element)
         if el is None:
             raise RwError(f"元素「{element}」不存在或快照已过期（>120s），请重新 look")
+        if not scene.matches_window(win["hwnd"]):
+            raise RwError("stale：元素快照属于另一个窗口，请对目标窗口重新 look")
         rect = None
         if all(el.get(k) is not None for k in ("left", "top", "right", "bottom")):
             rect = (el["left"], el["top"], el["right"], el["bottom"])
         return {"x": el["x"], "y": el["y"], "expect_name": el.get("name", "") or "",
-                "expect_rect": rect, "element": el}
+                "expect_rect": rect, "expect_type": el.get("type", ""),
+                "expect_automation_id": el.get("automation_id", ""), "element": el}
     if x is not None and y is not None:
         return {"x": int(x), "y": int(y), "expect_name": target or "",
                 "expect_rect": None, "element": None}
@@ -70,8 +73,7 @@ def _resolve_target(win, element=None, target="", x=None, y=None) -> dict:
             shot.close()
         raise RwError(
             f"无法定位「{target}」：记忆未命中、OCR 未找到文字。"
-            f"请先 look() 查看标注图，用 click(element=\"eN\") 或 click(x, y)——"
-            f"视觉定位由主模型看标注图完成，无需额外 VL 模型。")
+            f"请先 look() 查看标注图，再使用最新元素编号或 click(x, y)。")
     raise RwError("必须提供 element / target / x,y 之一")
 
 
@@ -91,12 +93,16 @@ def find_control(win, *, element=None, target="", x=None, y=None,
         raise RwError(
             f"({t['x']},{t['y']}) 附近没有可操作的 UIA 控件。"
             f"该软件可能未暴露控件树（Electron/自绘/游戏），请用 look() 看图后 x,y 直点。")
-    if not uia._same_target(hit, t["expect_name"], t["expect_rect"]):
+    if not uia._same_target(
+            hit, t["expect_name"], t["expect_rect"],
+            t.get("expect_type", ""), t.get("expect_automation_id", "")):
         raise RwError(
             f"stale：该位置现在的控件是「{hit['name'] or hit['type']}」（{hit['type']}），"
             f"与期望的「{t['expect_name'] or '未命名'}」不符。请重新 look 后再操作。")
     ctrl, pats = uia._resolve_action_control(
-        hit, hwnd, win_rect, t["expect_name"], t["expect_rect"], want_action=want_action)
+        hit, hwnd, win_rect, t["expect_name"], t["expect_rect"],
+        want_action=want_action, expect_type=t.get("expect_type", ""),
+        expect_automation_id=t.get("expect_automation_id", ""))
     if ctrl is None:
         raise RwError("无法取得该位置的可操作控件（点定位与逐节点重扫均未命中）")
     return ctrl, pats, hit
@@ -112,6 +118,24 @@ def read_value(win, *, element=None, target="", x=None, y=None) -> dict:
     return {"ok": True, "value": v, "source": "value_pattern",
             "control": {"name": hit["name"], "type": hit["type"]},
             "char_len": len(v or "")}
+
+
+def read_selection(win, *, element=None, target="", x=None, y=None) -> dict:
+    """通过 TextPattern 精确读取当前选区，不触碰系统剪贴板。"""
+    ctrl, pats, hit = find_control(win, element=element, target=target, x=x, y=y)
+    name = hit["name"] or hit["type"]
+    try:
+        pattern = ctrl.GetPattern(uia._u().PatternId.TextPattern)
+        ranges = pattern.GetSelection()
+        if hasattr(ranges, "Length"):
+            ranges = [ranges.GetElement(index) for index in range(ranges.Length)]
+        parts = [item.GetText(-1) for item in ranges]
+        text = "".join(parts)
+        return {"ok": True, "text": text, "source": "text_pattern_selection",
+                "exact": True, "char_len": len(text),
+                "control": {"name": name, "type": hit["type"]}}
+    except Exception as exc:
+        raise RwError(f"控件「{name}」不支持 TextPattern 选区读取: {exc}")
 
 
 def read_document(win, *, element=None, target="", x=None, y=None) -> dict:

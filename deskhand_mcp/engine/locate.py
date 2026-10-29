@@ -1,13 +1,9 @@
 """
-locate.py — 三级定位引擎：记忆库 → OCR → VL 漏斗。
+locate.py — 标注图、网格和元素记忆注入。
 
-核心原则：能用确定性手段拿到坐标的，绝不让 VL 输出坐标。
-- L1 记忆库：历史成功坐标 + 局部图像签名验证（0 次模型调用）；
-- L2 OCR：本地 OCR 找文字目标的精确 bbox（0 次模型调用）；
-- L3 VL 漏斗：VL 只做粗定位（3×3 格子），工程层裁剪放大后让 VL 在
-  小区域里指像素点，最后换算回屏幕坐标（1-2 次模型调用，且每次 ≤384 token）。
-
-所有截图/OCR 在 desktop.run() 线程执行；VL 调用为 httpx 异步。
+当前 MCP 主流程在 tools.py 中使用记忆 → UIA → OCR，不调用视觉模型。
+本文件下部的 locate/_vl_funnel/verify_point 是 AstrBot 时代的兼容实现，
+不注册为 MCP 工具，也不参与当前主流程。
 """
 
 from __future__ import annotations

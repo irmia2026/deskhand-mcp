@@ -2,8 +2,8 @@
 desktop.py — 桌面基础层：单线程执行器、DPI 感知、窗口枚举、截图。
 
 设计要点：
-- 所有桌面操作（截图 / 鼠标 / 键盘 / OCR）都在同一个专用线程里串行执行：
-  鼠标是全局共享资源，串行天然避免竞态；也不依赖任何 COM/UIA（v2 已全面转向视觉方案）。
+- 所有桌面操作（截图 / 鼠标 / 键盘 / OCR / UIA）都在同一个专用 STA 线程里串行执行：
+  鼠标是全局共享资源，串行避免竞态，COM/UIA 不跨线程使用。
 - SetProcessDPIAware 保证 GetWindowRect 的坐标与 ImageGrab 截图像素一致。
 """
 
@@ -286,6 +286,26 @@ def window_rect(hwnd: int) -> Optional[tuple]:
         return None
 
 
+def window_from_hwnd(hwnd) -> Optional[dict]:
+    import win32gui
+
+    try:
+        hwnd = int(hwnd)
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return None
+        iconic = bool(win32gui.IsIconic(hwnd))
+        rect = None if iconic else tuple(win32gui.GetWindowRect(hwnd))
+        return {
+            "hwnd": hwnd,
+            "title": (win32gui.GetWindowText(hwnd) or "").strip(),
+            "rect": rect,
+            "class_name": win32gui.GetClassName(hwnd) or "",
+            "iconic": iconic,
+        }
+    except Exception:
+        return None
+
+
 def valid_rect(rect) -> bool:
     """矩形有效且不是最小化窗口（最小化时 rect 约为 -32000）。"""
     if not rect or len(rect) != 4:
@@ -345,10 +365,13 @@ def screen_bounds() -> tuple[int, int, int, int]:
     return (0, 0, 1 << 15, 1 << 15)
 
 def screenshot(bbox: Optional[tuple] = None):
-    """截屏（全虚拟屏或指定区域），返回 PIL.Image。调用方负责 close。"""
+    """截屏（全虚拟屏或指定区域），必要时临时隐藏 Agent 覆盖层。"""
     from PIL import ImageGrab
 
-    return ImageGrab.grab(bbox=bbox, all_screens=True)
+    from . import overlay
+
+    with overlay.capture_guard():
+        return ImageGrab.grab(bbox=bbox, all_screens=True)
 
 
 def screenshot_window(hwnd: int):
@@ -383,6 +406,22 @@ def coord_space_info(size: tuple[int, int]) -> dict:
         info["scale_factor"] = None
         info["logical_size"] = None
     return info
+
+
+def operation_context(hwnd=None) -> dict:
+    """返回可安全获取的权限和前台上下文，不猜测目标进程完整性级别。"""
+    foreground = foreground_window()
+    target = window_from_hwnd(hwnd) if hwnd is not None else None
+    try:
+        elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        elevated = None
+    return {
+        "server_elevated": elevated,
+        "foreground": foreground,
+        "target": target,
+        "note": "UAC 安全桌面不可穿透；目标是否提权需结合原始 Win32 错误判断",
+    }
 
 
 def sleep(seconds: float) -> None:

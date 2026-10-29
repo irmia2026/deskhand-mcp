@@ -53,13 +53,17 @@ def wait_for_change(region: Optional[list] = None, timeout: float = 5.0,
         bbox = (x, y, x + w, y + h)
 
     ref = reference if reference is not None else desktop.screenshot(bbox)
-    deadline = time.monotonic() + max(0.1, timeout)
-    while time.monotonic() < deadline:
-        time.sleep(interval)
-        cur = desktop.screenshot(bbox)
-        d = diff_images(ref, cur)
-        cur.close()
-        if d["changed"]:
-            return {"changed": True, "elapsed": round(timeout - max(0.0, deadline - time.monotonic()), 2),
-                    "percent": d["percent"], "bbox": d["bbox"]}
-    return {"changed": False, "timeout": timeout}
+    try:
+        deadline = time.monotonic() + max(0.1, timeout)
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            cur = desktop.screenshot(bbox)
+            d = diff_images(ref, cur)
+            cur.close()
+            if d["changed"]:
+                return {"changed": True, "elapsed": round(timeout - max(0.0, deadline - time.monotonic()), 2),
+                        "percent": d["percent"], "bbox": d["bbox"]}
+        return {"changed": False, "timeout": timeout}
+    finally:
+        if reference is None:
+            ref.close()

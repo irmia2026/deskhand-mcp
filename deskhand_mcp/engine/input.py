@@ -40,24 +40,34 @@ def move_to(x: int, y: int, steps: int = 0) -> None:
         time.sleep(0.015)
 
 
-def click(x: int, y: int, button: str = "left", double: bool = False) -> dict:
+def click(x: int, y: int, button: str = "left", double: bool = False,
+          count: Optional[int] = None, move_settle_ms: int = 50,
+          press_ms: int = 40, after_ms: int = 50) -> dict:
     win32api, win32con = _win32()
     btn_map = {
         "left": (win32con.MOUSEEVENTF_LEFTDOWN, win32con.MOUSEEVENTF_LEFTUP),
         "right": (win32con.MOUSEEVENTF_RIGHTDOWN, win32con.MOUSEEVENTF_RIGHTUP),
         "middle": (win32con.MOUSEEVENTF_MIDDLEDOWN, win32con.MOUSEEVENTF_MIDDLEUP),
     }
-    down, up = btn_map.get(button, btn_map["left"])
+    if button not in btn_map:
+        raise ValueError(f"未知鼠标按钮: {button}")
+    times = (2 if double else 1) if count is None else int(count)
+    if times not in (1, 2, 3):
+        raise ValueError("count 必须是 1、2 或 3")
+    timings = (int(move_settle_ms), int(press_ms), int(after_ms))
+    if any(v < 0 or v > 1000 for v in timings):
+        raise ValueError("点击时序参数必须在 0–1000ms 内")
+    down, up = btn_map[button]
     move_to(x, y, steps=6)
-    time.sleep(0.05)
-    times = 2 if double else 1
-    for _ in range(times):
+    time.sleep(timings[0] / 1000)
+    for i in range(times):
         win32api.mouse_event(down, 0, 0, 0, 0)
-        time.sleep(0.04)
+        time.sleep(timings[1] / 1000)
         win32api.mouse_event(up, 0, 0, 0, 0)
-        if double:
-            time.sleep(0.05)
-    return {"x": x, "y": y, "button": button, "double": double}
+        if i + 1 < times:
+            time.sleep(timings[2] / 1000)
+    return {"x": x, "y": y, "button": button, "double": times == 2,
+            "count": times}
 
 
 def hover(x: int, y: int) -> None:
@@ -65,31 +75,55 @@ def hover(x: int, y: int) -> None:
     time.sleep(0.1)
 
 
-def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 12) -> dict:
+def drag_path(points: list, press_ms: int = 100, step_ms: int = 20,
+              after_ms: int = 50, should_cancel=None) -> dict:
+    if not isinstance(points, list) or not 2 <= len(points) <= 1024:
+        raise ValueError("points 必须包含 2–1024 个点")
+    normalized = []
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("每个点都必须是 [x,y]")
+        normalized.append((int(point[0]), int(point[1])))
+    if len(set(normalized)) < 2:
+        raise ValueError("路径至少需要两个不同点")
+    press_ms, step_ms, after_ms = int(press_ms), int(step_ms), int(after_ms)
+    if not 0 <= press_ms <= 1000 or not 0 <= step_ms <= 100 or not 0 <= after_ms <= 1000:
+        raise ValueError("拖拽时序超出允许范围")
     win32api, win32con = _win32()
-    move_to(x1, y1, steps=5)
+    move_to(*normalized[0], steps=5)
     time.sleep(0.05)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.1)
-    for i in range(1, steps + 1):
-        nx = int(x1 + (x2 - x1) * i / steps)
-        ny = int(y1 + (y2 - y1) * i / steps)
-        win32api.SetCursorPos((nx, ny))
-        time.sleep(0.02)
-    time.sleep(0.05)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    return {"from": [x1, y1], "to": [x2, y2]}
+    try:
+        time.sleep(press_ms / 1000)
+        for x, y in normalized[1:]:
+            if should_cancel and should_cancel():
+                raise InputCancelled("用户已按 Esc 暂停，停止拖拽")
+            win32api.SetCursorPos((x, y))
+            time.sleep(step_ms / 1000)
+    finally:
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(after_ms / 1000)
+    return {"from": list(normalized[0]), "to": list(normalized[-1]),
+            "points": len(normalized)}
+
+
+def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 12) -> dict:
+    points = [(int(x1 + (x2 - x1) * i / steps),
+               int(y1 + (y2 - y1) * i / steps)) for i in range(steps + 1)]
+    return drag_path(points)
 
 
 def scroll(x: int, y: int, direction: str, amount: int = 3) -> dict:
-    """滚轮。up/down 用垂直轮，left/right 用水平轮（MOUSEEVENTF_HWHEEL）。
-
-    Win32 语义：WHEEL 正值 = 向上滚，HWHEEL 正值 = 向右滚。
-    """
+    """滚轮。up/down 用垂直轮，left/right 用水平轮（MOUSEEVENTF_HWHEEL）。"""
+    if direction not in ("up", "down", "left", "right"):
+        raise ValueError(f"未知滚动方向: {direction}")
+    amount = int(amount)
+    if amount <= 0 or amount > 100:
+        raise ValueError("amount 必须在 1–100 内")
     win32api, win32con = _win32()
     move_to(x, y, steps=4)
     time.sleep(0.05)
-    delta = int(amount) * 120
+    delta = amount * 120
     if direction in ("down", "left"):
         delta = -delta
     if direction in ("left", "right"):
@@ -105,7 +139,7 @@ def scroll(x: int, y: int, direction: str, amount: int = 3) -> dict:
 #
 # 教训：keybd_event + KEYEVENTF_UNICODE 在实测中一个字都打不进去（标准 EDIT 控件
 # 回读为空）。唯一可靠的注入 API 是 SendInput。
-# 中文等非 ASCII 文本默认走剪贴板粘贴（100% 可靠，自动保存/恢复剪贴板）。
+# 默认全 Unicode 输入，不碰剪贴板；仅显式 clipboard 路径做完整格式备份。
 
 import ctypes
 from ctypes import wintypes
@@ -174,101 +208,94 @@ def _send_unicode_char(ch: str) -> None:
         )
 
 
-def _type_unicode(text: str, interval: float) -> None:
-    win32api, win32con = _win32()
+class InputCancelled(RuntimeError):
+    pass
+
+
+def _send_unicode_chunk(text: str) -> None:
+    events = []
     for ch in text:
-        if ch == "\n":
-            win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)
-            win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)
-        elif ch == "\t":
-            win32api.keybd_event(win32con.VK_TAB, 0, 0, 0)
-            win32api.keybd_event(win32con.VK_TAB, 0, win32con.KEYEVENTF_KEYUP, 0)
+        code = ord(ch)
+        if code > 0xFFFF:
+            code -= 0x10000
+            units = [0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF)]
         else:
-            _send_unicode_char(ch)
-        time.sleep(interval)
+            units = [code]
+        for unit in units:
+            for flags in (_KEYEVENTF_UNICODE, _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP):
+                event = _INPUT()
+                event.type = _INPUT_KEYBOARD
+                event.union.ki = _KEYBDINPUT(0, unit, flags, 0, None)
+                events.append(event)
+    arr = (_INPUT * len(events))(*events)
+    sent = ctypes.windll.user32.SendInput(len(events), arr, ctypes.sizeof(_INPUT))
+    if sent != len(events):
+        err = ctypes.get_last_error()
+        raise RuntimeError(
+            f"SendInput 被拦截（{sent}/{len(events)}，GetLastError={err}）"
+            "——目标窗口可能是提权进程（UIPI 隔离）"
+        )
 
 
-def _clipboard_paste(text: str) -> dict:
-    """剪贴板通道：保存原剪贴板文本 → 写入目标文本 → Ctrl+V → 恢复原内容。
+def _type_unicode(text: str, interval: float, should_cancel=None) -> None:
+    win32api, win32con = _win32()
+    pending = []
 
-    返回 {"restored": bool}——OpenClipboard 争用是瞬时的，还原按 3×100ms 重试；
-    结果必须回传给调用方，不能让确定性信息只活在日志里。
-    """
+    def flush() -> None:
+        if pending:
+            chunk = "".join(pending)
+            pending.clear()
+            _send_unicode_chunk(chunk)
+            time.sleep(interval * len(chunk))
+
+    for ch in text:
+        if should_cancel and should_cancel():
+            raise InputCancelled("用户已按 Esc 暂停，停止后续文本输入")
+        if ch in ("\n", "\t"):
+            flush()
+            vk = win32con.VK_RETURN if ch == "\n" else win32con.VK_TAB
+            _key_event(vk)
+            _key_event(vk, keyup=True)
+            time.sleep(interval)
+        else:
+            pending.append(ch)
+            if len(pending) >= 8:
+                flush()
+    flush()
+
+
+def _clipboard_paste(text: str, should_cancel=None) -> dict:
     import win32clipboard
 
-    win32api, win32con = _win32()
-    old_text = None
-    win32clipboard.OpenClipboard()
-    try:
-        if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-            try:
-                old_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-            except Exception:
-                old_text = None
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
-    finally:
-        win32clipboard.CloseClipboard()
+    from .clipboard import ClipboardBackup
 
-    time.sleep(0.05)
-    win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
-    time.sleep(0.02)
-    win32api.keybd_event(ord("V"), 0, 0, 0)
-    time.sleep(0.02)
-    win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)
-    win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
-    time.sleep(0.3)  # 等粘贴完成再恢复剪贴板
-
-    restored = False
-    if old_text is not None:
-        # 恢复路径必须 finally 关剪贴板：执行器线程常驻，一旦漏关，
-        # 全局剪贴板被本进程长期锁定（其他应用也无法复制粘贴）
-        for _attempt in range(3):
-            try:
-                win32clipboard.OpenClipboard()
-                try:
-                    win32clipboard.EmptyClipboard()
-                    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, old_text)
-                finally:
-                    win32clipboard.CloseClipboard()
-                restored = True
-                break
-            except Exception:
-                time.sleep(0.1)
-        if not restored:
-            import logging
-
-            logging.getLogger("deskhand.input").warning(
-                "剪贴板恢复失败（3 次重试均无法 OpenClipboard）"
-            )
-    else:
-        restored = True  # 原本就没有可恢复的内容
-    return {"restored": restored}
+    if should_cancel and should_cancel():
+        raise InputCancelled("用户已按 Esc 暂停，取消剪贴板输入")
+    with ClipboardBackup() as backup:
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+        finally:
+            win32clipboard.CloseClipboard()
+        time.sleep(0.05)
+        press(["ctrl", "v"])
+        time.sleep(0.3)
+    return {"restored": backup.restored, "formats": backup.formats_after}
 
 
-def type_text(text: str, interval: float = 0.02, method: str = "auto") -> dict:
-    """输入任意文本（支持中文/emoji）。
-
-    method:
-    - auto：含非 ASCII 字符走剪贴板粘贴（最可靠），纯 ASCII 走 SendInput 逐键；
-    - unicode：强制 SendInput UNICODE 逐键注入；
-    - clipboard：强制剪贴板粘贴。
-    """
-    restored = None
+def type_text(text: str, interval: float = 0.02, method: str = "auto",
+              should_cancel=None) -> dict:
+    """输入文本；auto/unicode 不修改剪贴板，clipboard 先完整备份再粘贴。"""
+    if method not in ("auto", "unicode", "clipboard"):
+        raise ValueError(f"未知输入方式: {method}")
     if method == "clipboard":
-        restored = _clipboard_paste(text)["restored"]
-        used = "clipboard"
-    elif method == "unicode":
-        _type_unicode(text, interval)
-        used = "unicode"
-    else:  # auto
-        if all(ord(c) < 128 for c in text):
-            _type_unicode(text, interval)
-            used = "unicode"
-        else:
-            restored = _clipboard_paste(text)["restored"]
-            used = "clipboard"
-    return {"len": len(text), "method": used, "clipboard_restored": restored}
+        result = _clipboard_paste(text, should_cancel)
+        return {"len": len(text), "method": "clipboard",
+                "clipboard_restored": result["restored"],
+                "clipboard_formats": result["formats"]}
+    _type_unicode(text, interval, should_cancel)
+    return {"len": len(text), "method": "unicode", "clipboard_restored": None}
 
 
 _NAMED_KEYS = {

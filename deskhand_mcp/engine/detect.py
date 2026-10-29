@@ -32,6 +32,54 @@ def available() -> bool:
     return _available
 
 
+def _union_boxes(group: list[dict]) -> dict:
+    left = min(b["left"] for b in group)
+    top = min(b["top"] for b in group)
+    right = max(b["right"] for b in group)
+    bottom = max(b["bottom"] for b in group)
+    return {"x": (left + right) // 2, "y": (top + bottom) // 2,
+            "left": left, "top": top, "right": right, "bottom": bottom,
+            "area": (right - left) * (bottom - top)}
+
+
+def _merge_text_contours(boxes: list[dict]) -> list[dict]:
+    small = [b for b in boxes if b["bottom"] - b["top"] <= 60
+             and b["right"] - b["left"] <= 120]
+    large = [b for b in boxes if b not in small]
+    small.sort(key=lambda b: (b["y"], b["left"]))
+    merged = []
+    for box in small:
+        if not merged:
+            merged.append([box])
+            continue
+        group = merged[-1]
+        height = max(b["bottom"] - b["top"] for b in group)
+        gap = box["left"] - max(b["right"] for b in group)
+        if (abs(box["y"] - group[-1]["y"]) <= max(8, height // 2)
+                and gap <= max(12, height)):
+            group.append(box)
+        else:
+            merged.append([box])
+    large.extend(_union_boxes(group) if len(group) > 1 else group[0]
+                 for group in merged)
+    return large
+
+
+def _suppress_letter_fragments(boxes: list[dict]) -> list[dict]:
+    suppressed = set()
+    for container in boxes:
+        if container["bottom"] - container["top"] > 300:
+            continue
+        nested = [b for b in boxes
+                  if b is not container and b["bottom"] - b["top"] <= 60
+                  and container["left"] <= b["x"] <= container["right"]
+                  and container["top"] <= b["y"] <= container["bottom"]
+                  and b["area"] < container["area"] * 0.5]
+        if len(nested) >= 2:
+            suppressed.update(id(b) for b in nested)
+    return [b for b in boxes if id(b) not in suppressed]
+
+
 def detect_boxes(image, max_boxes: int = 40) -> list[dict]:
     """检测图像中的候选交互框，返回 [{x, y, left, top, right, bottom, area}]（中心点+矩形）。
 
@@ -77,7 +125,8 @@ def detect_boxes(image, max_boxes: int = 40) -> list[dict]:
             }
         )
 
-    # 中心距去重（同一元素的内外双层框取大者）
+    boxes = _merge_text_contours(boxes)
+    boxes = _suppress_letter_fragments(boxes)
     boxes.sort(key=lambda b: -b["area"])
     kept: list[dict] = []
     for b in boxes:

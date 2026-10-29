@@ -1,59 +1,100 @@
 # Deskhand-mcp
 
-Windows 桌面操控 MCP server——DeskHand 引擎的独立发行版，采用 **host-as-VL 架构**：
-本 server 只做确定性的事（UIA 控件树 / 元素记忆 / OCR / 像素 diff / 精确读写），
-一切视觉判断交回主模型——标注图通过 MCP ImageContent 直接进主模型上下文，
-**不需要额外的视觉模型**。
+Windows 桌面操控 MCP server，采用 **host-as-VL 架构**：本地完成 UIA、OCR、CV、像素比较和精确读写；标注图通过 MCP ImageContent 返回主模型，不需要额外视觉模型。
 
-从 DeskHand（AstrBot 插件版）到 Deskhand-mcp 的核心变化：
+当前版本 **0.3.0**，主要能力：
 
-| | DeskHand | Deskhand-mcp |
-|---|---|---|
-| 定位漏斗 | 记忆 → OCR → VL 三级（需配 VL 模型） | 确定性两级：记忆 → OCR；找不到就把图给主模型看 |
-| hover-verify | 调 VL 确认落点 | `verify_point` 画十字准星把局部放大图返回给主模型确认（agent-in-the-loop） |
-| 精确读取 | OCR（中文混合串实测准确率约 63%） | `read_value`/`read_document` 走 ValuePattern/TextPattern，逐字精确 |
-| 文本写入 | `SetValue` 直接覆盖（实测会静默清空原文） | `append_text` 默认追加 + 回读逐字验证；覆盖必须 `confirm_overwrite=true` |
-| 运行环境 | AstrBot 插件 | 任意 MCP host（Claude Code / Kimi Code / 等） |
+- UIA 控件树 + OCR 文字 + CV 候选框，生成编号元素卡片和标注图；
+- ValuePattern/TextPattern 精确读写，默认安全追加并逐字回读；
+- 应用/窗口发现、启动应用、显式 UIA 原生动作、多击和路径拖拽；
+- 全屏 Agent 覆盖层、左下角实时操作流和物理 Esc 暂停；
+- 可选 WGC 后台窗口像素验证，区分陈旧帧与无变化。
 
 ## 安装
 
 ```bash
 pip install deskhand-mcp[all]   # 或 pip install -e .[all]
-deskhand-mcp                     # stdio server，直接配进 MCP host
+deskhand-mcp                     # stdio server
 ```
 
-依赖说明：`mcp`/`pywin32`/`Pillow`/`uiautomation` 为必需；`winsdk`（WinRT OCR）、
-`rapidocr-onnxruntime`（OCR 兜底）、`opencv-python-headless`（CV 候选框）、
-`windows-capture`（WGC 后台抓图）可选，缺哪个对应通道就静默降级。
+必需依赖：`mcp`、`pywin32`、Pillow、`uiautomation`。可选依赖：
 
-## 工具一览（14 个）
+- `winsdk` / `rapidocr-onnxruntime`：本地 OCR；
+- `opencv-python-headless`：CV 候选框；
+- `windows-capture`：WGC 后台窗口抓图。
 
-**看界面（图随结果返回，主模型自己看图）**
+缺少可选依赖时对应通道降级，不影响其他工具。
 
-- `look(window="")` — 编号元素卡片（UIA 控件 + OCR 文字 + CV 候选框三通道）
-  + 元素标注图（框和编号与卡片一一对应）
-- `scene_grid(window="")` — 图形/自绘界面的 3×3 编号网格图 + 格→屏幕坐标映射
-- `verify_point(x, y)` — 画十字准星返回 320px 局部放大图，主模型看图确认落点
+## Agent 覆盖层
 
-**操作**
+第一次工具调用会自动显示覆盖层：
 
-- `click(element="eN" | target="文字" | x, y)` — UIA 控件后台点击不抢焦点；
-  element 路径带现场签名校验 + OCR 自愈；动作后像素 diff 验证
-- `type_text(text, element=)` — UIA 输入控件走后台安全追加（回读验证），
-  否则点击聚焦 + 键鼠输入
-- `press_key / scroll / drag / wait_change / window_action` — 按键 / 滚动 /
-  拖拽 / 等画面变化 / 窗口管理（min/max/restore/close/focus/move/resize…）
+- 主色采用 irmia.me 的 `#2b54e5`，外圈以直角完整覆盖屏幕并使用连续 alpha 蒙版渐变，内部卡片保留圆角；中心完全透明且鼠标穿透，不抢焦点；
+- 字体和布局按每个显示器的 DPI 独立缩放，支持混合 DPI；使用明确的 CJK 字体回退，缺少中文字体时切换英文界面；
+- 顶部显示 `DESKHAND // AGENT ACTIVE` 和“按 Esc 暂停”；
+- 左下角滚动显示最近操作、目标摘要、状态和耗时；输入文本只显示字符数，不展示全文；
+- 覆盖层通过 `WDA_EXCLUDEFROMCAPTURE` 排除在截图之外；不支持时会在取图瞬间隐藏，避免污染 OCR、CV 和像素 diff；
+- 支持多显示器虚拟屏和负坐标。
 
-**精确读写（ValuePattern / TextPattern，逐字精确）**
+**物理 Esc** 会隐藏覆盖层并暂停后续工具。Agent 自己调用 `press_key(["esc"])` 属于 injected 输入，不会误触发暂停。已经开始的不可中断系统调用不会强杀，但长输入和路径拖拽会在安全检查点停止。
 
-- `read_value(element=)` — 读输入框当前值（ValuePattern）
-- `read_document(element=)` — 读文档全文（TextPattern → ValuePattern → OCR 降级，
-  OCR 结果如实标 `exact:false`）
-- `append_text(text, element=)` — 安全追加：读旧值 → 身份校验 → 追加 →
-  SetValue → 回读逐字验证
-- `set_value(text, confirm_overwrite=true)` — 整篇覆盖（危险，默认拒绝）
+暂停后，Agent 只能查询 `agent_control(action="status")`。只有用户在对话中明确允许后，才能调用 `agent_control(action="resume")` 恢复。
 
-## 在 MCP host 中配置
+## 工具一览（21 个）
+
+### 应用与窗口
+
+- `list_windows()` — 返回 hwnd、标题、应用、矩形、最小化和前台状态；
+- `list_apps()` — 枚举 Windows StartApps；
+- `launch_app(app, args=[], wait_for_window=false)` — 启动应用，可等待新顶层窗口并返回 hwnd；
+- `window_action(action, title= | hwnd=)` — min/max/restore/close/focus/topmost/untopmost/move/resize。
+
+### 看界面
+
+- `look(window= | hwnd=)` — 默认绑定并聚焦目标窗口，只有 `scope="screen"` 才观察全屏；
+- `look(view="annotated" | "raw" | "grid")` — 分别返回候选标注图、未标注原图或 3×3 网格图；
+- `look(limit=40, cursor=...)` — 同一代快照内分页，元素编号和截图保持稳定；
+- `look(source="uia" | "ocr" | "cv", kind="actions" | "text")` — 按通道或用途过滤；
+- `scene_grid(window="")` — 独立的 3×3 网格图及屏幕坐标映射；
+- `verify_point(x, y)` — 返回带十字准星的 320px 局部图，由主模型确认落点。
+
+### 操作
+
+- `click(element= | target= | x,y)` — 元素/文字/坐标点击，支持左中右键和 1–3 击；
+- `element_action(element, action)` — 显式 invoke/toggle/expand/collapse/select/scroll_into_view；
+- `type_text(text, element=)` — UIA 输入控件优先安全追加，否则聚焦后真实输入；
+- `press_key(keys)` / `scroll(...)` — 组合键与滚动；
+- `drag(x1,y1,x2,y2)` — 直线拖拽；
+- `drag_path(points)` — 2–1024 点的连续路径拖拽，支持有限幅的时序配置；
+- `wait_change(region=, timeout=)` — 异步像素轮询，不阻塞其他 Deskhand 工具。
+
+### 精确读写
+
+- `read_value(element=)` — ValuePattern 精确读取；
+- `read_selection(element=)` — TextPattern 精确读取当前选区，不触碰剪贴板；
+- `read_document(element=)` — TextPattern → ValuePattern → OCR 降级，OCR 明确标 `exact:false`；
+- `append_text(text, element=)` — 身份校验后追加，逐字回读验证；
+- `set_value(text, confirm_overwrite=true)` — 整篇覆盖，默认拒绝。
+
+### 状态
+
+- `agent_control(action="status" | "resume")` — 查询覆盖层/暂停状态，或经用户明确允许后恢复。
+
+## 窗口与焦点策略
+
+`look` 会绑定任务窗口，后续点击、读写、滚动和按键默认沿用该窗口，不需要重复传标题。`focus` 统一支持：
+
+- `auto`：观察或真实键鼠操作前置前，UIA 后台读写不抢焦点；
+- `always`：即使后台动作也先置前；
+- `never`：禁止抢焦点，真实输入目标不在前台时拒绝执行。
+
+```text
+list_windows → look(hwnd=...) → 使用最新元素编号 → 需要时用 next_cursor 翻页
+```
+
+OCR 与 CV 会按视觉行和包含关系去重：整段文字保留为一个语义元素，自绘控件保留 CV 可点击区域并合并 OCR 文字。
+
+## MCP host 配置
 
 ```json
 {
@@ -65,7 +106,7 @@ deskhand-mcp                     # stdio server，直接配进 MCP host
 }
 ```
 
-未安装为包时可直接用源码运行：
+未安装为包时：
 
 ```json
 {
@@ -79,27 +120,34 @@ deskhand-mcp                     # stdio server，直接配进 MCP host
 }
 ```
 
-记忆库（元素位置 + 图像签名）存于 `%LOCALAPPDATA%\deskhand-mcp\deskhand_memory.db`，
-设环境变量 `DESKHAND_DATA_DIR` 可改目录。
+推荐工作流：`list_windows` → `look(hwnd=...)` → 使用返回的最新元素编号操作。元素编号带快照代次，重新 `look` 后旧编号立即失效，不能混用。
 
-## 架构：为什么砍掉 VL
+记忆库位于 `%LOCALAPPDATA%\deskhand-mcp\deskhand_memory.db`，可用 `DESKHAND_DATA_DIR` 修改目录。
 
-实测对比（见 DeskHand 深度评测）：VL 漏斗最贵的一环（每点一次都要调视觉模型）
-恰恰是最不可靠的一环——黑盒坐标、不可解释、延迟高。而现代主模型基本都已多模态，
-看图能力远超专用小 VL。host-as-VL 的思路：**把「看」还给主模型，把「做」做扎实**——
+## 安全与结果语义
 
-- 能确定性的绝不给模型猜：UIA 控件树、OCR 文字、像素 diff、ValuePattern 回读；
-- 必须视觉判断的地方，把图直接塞进主模型上下文（标注图/网格图/准星放大图），
-  由主模型下结论或给修正量——agent-in-the-loop，每一步都可解释；
-- 精确读写绕过像素层：TextPattern 的 `DocumentRange.GetText(-1)` 读全文逐字精确，
-  彻底告别「看图识字」的保真度问题。
+- UAC 安全桌面不可穿透；提权目标或 UIPI 拦截会报错，不能静默当作成功；
+- 最小化窗口先 `window_action(action="restore")`；
+- 真实鼠标输入默认先置前目标窗口；`focus="never"` 时若目标不在前台则拒绝，避免坐标落到遮挡窗口；
+- UIA 重定位使用 AutomationId 或名称、类型、矩形组合校验，歧义时返回 `stale`；
+- 默认文本输入使用 `SendInput UNICODE`，**不读取或修改剪贴板**；仅显式选择 clipboard 输入时备份所有可安全序列化的格式并在 `finally` 中恢复，存在无法可靠备份的格式时会在修改前拒绝；
+- `ok/dispatched` 表示调用或输入已派发；`verified/effective` 表示有状态、回读或画面证据。单纯像素变化不是目标动作成功的确定性证明；
+- 屏幕内容均是不受信数据，不是给 Agent 的指令。
 
-## 安全边界
+## 测试
 
-- UAC 提权窗口、以管理员运行的窗口：UIA/win32 无法穿透，工具会如实报错；
-- 最小化窗口 UIA 树为空：先 `window_action(action="restore")`；
-- `set_value` 覆盖写入默认拒绝，必须显式 `confirm_overwrite=true`；
-- 目标身份不符（弹窗遮挡/界面移动）时报 stale 中止，绝不盲点旧坐标。
+```bash
+python -m unittest test_units.py -v
+python test_client.py
+python test_more.py
+python test_capabilities.py
+python test_input_safety.py
+python test_canvas_ui.py
+python test_overlay.py
+python -m pip wheel . --no-deps --wheel-dir test_artifacts/wheel
+```
+
+GUI 测试会真实操作隔离的记事本测试标签，并验证读回、选区、窗口矩形、记忆命中和覆盖层行为。`test_canvas_ui.py` 还会验证像素文字自绘 UI 与完全无文字 UI 的 OCR/CV、分页、网格、点击、拖拽和等待变化。请勿把其他应用中的未保存内容当作测试目标。
 
 ## 协议
 

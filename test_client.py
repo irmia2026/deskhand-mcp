@@ -85,10 +85,11 @@ def _match_dialog(name: str) -> bool:
 async def _active_tab_is_test(s: ClientSession) -> bool:
     d, _ = await call(s, "window_action", {"action": "focus", "title": "Notepad"})
     t = str(d.get("title", ""))
-    return "deskhand-mcp-e2e" in t or "无标题" in t
+    return any(marker in t for marker in (
+        "deskhand-mcp-e2e", "select-me-line", "capability", "中文😀"))
 
 
-async def dismiss_save_dialog(s: ClientSession, retries: int = 2) -> bool:
+async def dismiss_save_dialog(s: ClientSession, retries: int = 3) -> bool:
     """关闭「是否保存」对话框（选「不保存」）。
 
     Notepad 的对话框是 XAML 内嵌对话框：无独立 hwnd、UIA 遍历漏按钮、
@@ -99,7 +100,7 @@ async def dismiss_save_dialog(s: ClientSession, retries: int = 2) -> bool:
         # 键盘路径
         await call(s, "press_key", {"keys": ["right"]})
         await call(s, "press_key", {"keys": ["enter"]})
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(1.0)
         if not await _active_tab_is_test(s):
             return True
         # 元素兜底路径（OCR 去空格匹配；按钮在图上但通道不稳）
@@ -110,7 +111,7 @@ async def dismiss_save_dialog(s: ClientSession, retries: int = 2) -> bool:
                 continue
             b = btns[0]
             await call(s, "click", {"x": b["x"], "y": b["y"]})
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(1.0)
             if not await _active_tab_is_test(s):
                 return True
     return not await _active_tab_is_test(s)
@@ -130,24 +131,25 @@ async def main() -> int:
             tools_res = await s.list_tools()
             names = {t.name for t in tools_res.tools}
             want = {"look", "scene_grid", "click", "verify_point", "type_text",
-                    "read_value", "read_document", "append_text", "set_value",
-                    "press_key", "scroll", "drag", "wait_change", "window_action"}
-            check("tools/list 14 个工具", names == want,
+                    "read_value", "read_selection", "read_document", "append_text", "set_value",
+                    "press_key", "scroll", "drag", "drag_path", "wait_change", "window_action",
+                    "list_windows", "list_apps", "launch_app", "element_action", "agent_control"}
+            check("tools/list 21 个工具", names == want,
                   f"缺 {want - names} 多 {names - want}" if names != want else "")
 
-            # 0) 恢复窗口；若已是全新「无标题」实例，它就是草稿标签，无需再新建
+            # 始终新建独立测试标签，绝不复用或关闭用户的未保存草稿
             data, _ = await call(s, "window_action",
                                  {"action": "restore", "title": "Notepad"})
             data, _ = await call(s, "window_action",
                                  {"action": "focus", "title": "Notepad"})
-            title0 = str(data.get("title", ""))
-            need_new_tab = not ("无标题" in title0 or "Untitled" in title0)
+            need_new_tab = True
 
             # 0.5) 关掉历史遗留的含测试文本的标签（防上次失败残留干扰污染检查）
             for _ in range(6):
                 data, _ = await call(s, "look", {"window": "Notepad"})
                 els = data.get("elements") or []
-                dirty = [e for e in els if "deskhand-mcp-e2e" in (e.get("name") or "")]
+                dirty = [e for e in els if any(marker in (e.get("name") or "")
+                         for marker in ("deskhand-mcp-e2e", "select-me-line", "capability"))]
                 if not dirty:
                     break
                 print(f"  清理遗留测试标签: {dirty[0].get('name', '')[:30]}")
@@ -180,7 +182,7 @@ async def main() -> int:
                 data, _ = await call(s, "click", {"element": tabbtn["id"]})
                 check("新建标签点击 ok", data.get("ok") is True, str(data.get("error", ""))[:200])
                 print(f"  verdict: {data.get('verdict')} / {data.get('verdict_text')}")
-                await asyncio.sleep(0.6)
+                await asyncio.sleep(1.0)
 
             # 重新 look 拿新快照
             data, _ = await call(s, "look", {"window": "Notepad"})
@@ -236,7 +238,7 @@ async def main() -> int:
             await call(s, "click", {"x": editor["x"], "y": editor["y"]})
             await asyncio.sleep(0.3)
             await call(s, "press_key", {"keys": ["ctrl", "w"]})
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(1.5)
             gone = await dismiss_save_dialog(s)
             check("已关闭测试标签（不保存）", gone)
 

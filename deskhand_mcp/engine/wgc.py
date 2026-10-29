@@ -230,6 +230,8 @@ def _capture_sync(hwnd: int, wait_newer: bool, timeout: float,
     diag = {"newer": None, "seq": None, "frame_age_ms": None}
     reason = _precheck(hwnd)
     if reason:
+        if reason.startswith("invalid hwnd"):
+            release(hwnd)
         _last_reason = reason
         return None, reason, diag
 

@@ -97,7 +97,8 @@ class ElementMemory:
             ).fetchone()
             if row:
                 if success:
-                    new_rel_x, new_rel_y, new_sig = rel_x, rel_y, crop_sig
+                    new_rel_x, new_rel_y = rel_x, rel_y
+                    new_sig = crop_sig or row[2]
                     hits, fails = row[3] + 1, 0
                 else:
                     new_rel_x, new_rel_y, new_sig = row[0], row[1], row[2]

@@ -32,13 +32,25 @@ async def main() -> int:
             await s.initialize()
             print("== 准备：focus + 新建标签 ==")
             await call(s, "window_action", {"action": "focus", "title": "Notepad"})
+            for _ in range(6):
+                d, _ = await call(s, "look", {"window": "Notepad"})
+                els = d.get("elements") or []
+                dirty = [e for e in els if e.get("type") == "tab" and any(
+                    marker in (e.get("name") or "")
+                    for marker in ("deskhand-mcp-e2e", "select-me-line", "capability", "中文😀"))]
+                if not dirty:
+                    break
+                await call(s, "click", {"x": dirty[0]["x"], "y": dirty[0]["y"]})
+                await asyncio.sleep(0.4)
+                await call(s, "press_key", {"keys": ["ctrl", "w"]})
+                await asyncio.sleep(1.0)
+                await dismiss_save_dialog(s)
             d, _ = await call(s, "look", {"window": "Notepad"})
             els = d.get("elements") or []
             tabbtn = find_el(els, "添加新标签页", "New tab")
-            if "deskhand-mcp-e2e" in str(d.get("window")):
-                check("起点干净（无遗留测试标签）", False)
-            else:
-                check("起点干净（无遗留测试标签）", True)
+            check("起点干净（无遗留测试标签）", not any(
+                marker in str(d.get("window"))
+                for marker in ("deskhand-mcp-e2e", "select-me-line", "capability", "中文😀")))
             await call(s, "click", {"element": tabbtn["id"]})
             await asyncio.sleep(0.6)
             d, _ = await call(s, "look", {"window": "Notepad"})
@@ -97,92 +109,129 @@ async def main() -> int:
             check("键鼠输入可读回", "keyboard-line-123" in (d.get("text") or ""),
                   repr((d.get("text") or "")[:40]))
 
-            # 5) target 点击（OCR 定位「查看」菜单）+ ESC 收回
-            print("== target 点击（OCR 通道）==")
+            # 5) target 点击（UIA/记忆/OCR 确定性定位）+ ESC 收回
+            print("== target 点击（确定性定位）==")
             d, _ = await call(s, "click", {"target": "查看", "window": "Notepad"})
             check("target 点击 ok", d.get("ok") is True,
                   f"{d.get('error', '')} | source={d.get('locate_source')}")
-            check("OCR/memory 通道定位", d.get("locate_source") in ("ocr", "memory"),
+            check("首次确定性定位", d.get("locate_source") in ("uia", "ocr", "memory"),
                   str(d.get("locate_source")))
             await asyncio.sleep(0.5)
+            await call(s, "press_key", {"keys": ["esc"]})
+            await asyncio.sleep(0.3)
             # 真实鼠标点对 XAML 菜单按钮可能只聚焦不展开——改用元素编号走 UIA 后台展开
             d, _ = await call(s, "look", {"window": "Notepad"})
             menu_btn = find_el(d.get("elements") or [], "查看")
-            d, _ = await call(s, "click", {"element": menu_btn["id"]})
-            check("UIA 展开查看菜单", d.get("ok") is True, str(d.get("error", ""))[:120])
+            d, _ = await call(s, "element_action", {"element": menu_btn["id"], "action": "expand"})
+            action_result = d
+            check("UIA 展开查看菜单", d.get("ok") is True, str(d)[:300])
             await asyncio.sleep(0.6)
-            d, _ = await call(s, "look", {"window": "Notepad"})
+            d, menu_img = await call(s, "look", {"window": "Notepad"})
             menu_open = find_el(d.get("elements") or [], "缩放", "状态栏", "自动换行")
-            check("查看菜单展开（UIA 通道可见菜单项）", menu_open is not None,
-                  "菜单项未进卡片")
+            if menu_open is None and menu_img:
+                save_img(menu_img, "menu_test_failure.png")
+            check("查看菜单实际展开", menu_open is not None,
+                  f"state={action_result.get('state_after')} budget={d.get('element_budget')} "
+                  f"names={[e.get('name') for e in d.get('elements') or []]}")
             d, _ = await call(s, "press_key", {"keys": ["esc"]})
             await asyncio.sleep(0.4)
 
-            # 5b) 第二次 target 点击应走记忆库
+            # 5b) 第二次 target 点击必须命中记忆库
             d, _ = await call(s, "click", {"target": "查看", "window": "Notepad"})
             check("再次 target 点击 ok", d.get("ok") is True, str(d.get("error", ""))[:120])
-            print(f"  locate_source={d.get('locate_source')}")
+            check("第二次 target 命中记忆库", d.get("locate_source") == "memory",
+                  str(d.get("locate_source")))
             await asyncio.sleep(0.4)
             await call(s, "press_key", {"keys": ["esc"]})
 
-            # 6) scroll：在编辑器滚动
+            # 6) scroll：验证可见内容确实变化
             print("== scroll ==")
-            d, _ = await call(s, "scroll", {"direction": "down", "amount": 3,
+            d, _ = await call(s, "look", {"window": "Notepad", "image": False})
+            editor = find_el(d.get("elements") or [], "文本编辑器", "Text Editor")
+            await call(s, "append_text", {
+                "text": "\n" + "\n".join(f"scroll-line-{i}" for i in range(60)),
+                "window": "Notepad", "element": editor["id"]})
+            d, _ = await call(s, "look", {"window": "Notepad", "image": False})
+            before_words = {e.get("name") for e in d.get("elements") or []}
+            d, _ = await call(s, "scroll", {"direction": "down", "amount": 5,
                                             "x": editor["x"], "y": editor["y"]})
-            check("scroll ok", d.get("ok") is True, str(d.get("error", ""))[:120])
+            check("scroll dispatched", d.get("ok") is True, str(d.get("error", ""))[:120])
+            d, _ = await call(s, "look", {"window": "Notepad", "image": False})
+            after_words = {e.get("name") for e in d.get("elements") or []}
+            check("滚动后可见内容变化", before_words != after_words)
+            editor = find_el(d.get("elements") or [], "文本编辑器", "Text Editor")
 
-            # 7) drag：在编辑器拖选一段文字（先确保有文字）
+            # 7) drag：用复制到的选中文本验证，并恢复系统剪贴板
             print("== drag ==")
-            d, _ = await call(s, "append_text", {"text": "select-me-line\n第二行文字",
-                                                 "window": "Notepad", "element": editor["id"]})
-            check("追加供拖拽的文本", d.get("ok") is True and d.get("verified") is True)
+            d, _ = await call(s, "set_value", {
+                "text": "select-me-line\n第二行文字", "confirm_overwrite": True,
+                "window": "Notepad", "element": editor["id"]})
+            check("准备可见的拖拽文本", d.get("ok") is True and d.get("verified") is True)
             d, _ = await call(s, "look", {"window": "Notepad"})
-            t = find_el(d.get("elements") or [], "select-me-line")
+            editor = find_el(d.get("elements") or [], "文本编辑器", "Text Editor")
+            t = next((e for e in d.get("elements") or []
+                      if e.get("type") in ("text", "box")
+                      and "select-me-line" in (e.get("ocr_text") or e.get("name") or "")
+                      and e.get("y", 0) > editor.get("top", 0)), None)
             check("OCR 找到锚点文字", t is not None)
             if t:
-                d, _ = await call(s, "drag", {"x1": t["x"] - 120, "y1": t["y"],
-                                              "x2": t["x"] + 60, "y2": t["y"]})
-                check("drag ok", d.get("ok") is True)
-                d, _ = await call(s, "press_key", {"keys": ["ctrl", "c"]})
-                d, _ = await call(s, "read_value", {"window": "Notepad", "element": editor["id"]})
-                # RichEdit 拖选后剪贴板有内容即证明 drag 有效（不依赖值回读）
+                d, _ = await call(s, "drag", {"x1": t["left"] + 2, "y1": t["y"],
+                                              "x2": t["right"] - 2, "y2": t["y"]})
+                check("drag dispatched", d.get("ok") is True)
+                d, _ = await call(s, "read_selection", {
+                    "window": "Notepad", "element": editor["id"]})
+                selected = d.get("text") or ""
+                check("拖拽选区可精确读取", "select" in selected,
+                      f"ok={d.get('ok')} text={selected!r} error={d.get('error')}")
 
-            # 8) wait_change：按个键等画面变化
+            # 8) wait_change：状态栏字符数变化由本次输入造成
             print("== wait_change ==")
             await call(s, "click", {"x": editor["x"], "y": editor["y"]})
             await asyncio.sleep(0.2)
-            d, _ = await call(s, "wait_change", {"region": [editor["x"] - 200, editor["y"] - 100, 400, 200], "timeout": 3.0})
-            check("wait_change 就绪", d.get("ok") is True)
+            d, _ = await call(s, "read_document", {"window": "Notepad", "element": editor["id"]})
+            old_len = len(d.get("text") or "")
+            grid2, _ = await call(s, "scene_grid", {"window": "Notepad", "image": False})
+            ox, oy = grid2["grid"]["origin_screen"]
+            width, height = grid2["size"]
+            region = [ox + 80, oy + height - 48, min(600, width - 160), 36]
             async def type_and_wait():
                 await asyncio.sleep(0.3)
                 await call(s, "type_text", {"text": "x", "focus": False})
             task = asyncio.create_task(type_and_wait())
-            d, _ = await call(s, "wait_change", {"timeout": 5.0})
+            d, _ = await call(s, "wait_change", {"region": region, "timeout": 5.0})
             await task
-            check("wait_change 捕获到变化", d.get("changed") is True,
-                  f"changed={d.get('changed')} waited={d.get('waited')}")
+            check("wait_change 捕获本次输入", d.get("changed") is True,
+                  f"changed={d.get('changed')} elapsed={d.get('elapsed')}")
+            d, _ = await call(s, "read_document", {"window": "Notepad", "element": editor["id"]})
+            check("等待期间输入实际写入", len(d.get("text") or "") == old_len + 1)
 
-            # 9) window_action move/resize 后 max（若已最大化则 move/resize 是空操作）
+            # 9) window_action：验证真实矩形和最大化状态
             print("== window_action ==")
-            d, _ = await call(s, "window_action", {"action": "focus", "title": "Notepad"})
-            state0 = d.get("window_state_before")
+            await call(s, "window_action", {"action": "focus", "title": "Notepad"})
+            await call(s, "window_action", {"action": "restore", "title": "Notepad"})
             d, _ = await call(s, "window_action", {"action": "move", "title": "Notepad", "x": 300, "y": 200})
-            check("move ok", d.get("ok") is True, str(d.get("error", ""))[:100])
+            hwnd = d.get("hwnd")
+            check("move dispatched", d.get("ok") is True, str(d.get("error", ""))[:100])
+            wins, _ = await call(s, "list_windows", {})
+            moved = next(w for w in wins.get("windows") or [] if w.get("hwnd") == hwnd)
+            check("move 真实坐标生效", moved["rect"][:2] == [300, 200], str(moved["rect"]))
             d, _ = await call(s, "window_action", {"action": "resize", "title": "Notepad", "w": 900, "h": 700})
-            check("resize ok", d.get("ok") is True, str(d.get("error", ""))[:100])
+            check("resize dispatched", d.get("ok") is True, str(d.get("error", ""))[:100])
+            wins, _ = await call(s, "list_windows", {})
+            resized = next(w for w in wins.get("windows") or [] if w.get("hwnd") == hwnd)
+            check("resize 真实尺寸生效", resized["rect"][2] - resized["rect"][0] == 900
+                  and resized["rect"][3] - resized["rect"][1] == 700, str(resized["rect"]))
+            d, _ = await call(s, "look", {"window": "Notepad", "image": False})
+            before_max = find_el(d.get("elements") or [], "文本编辑器", "Text Editor")
             d, _ = await call(s, "window_action", {"action": "max", "title": "Notepad"})
             check("max ok", d.get("ok") is True and d.get("window_state_after") == "maximized",
                   str(d.get("window_state_after")))
             await asyncio.sleep(0.4)
             d, _ = await call(s, "look", {"window": "Notepad"})
-            els = d.get("elements") or []
-            ed2 = find_el(els, "文本编辑器", "Text Editor")
+            ed2 = find_el(d.get("elements") or [], "文本编辑器", "Text Editor")
             check("max 后编辑器仍在卡片", ed2 is not None)
-            if state0 == "normal":
-                check("max 后元素坐标跟随新布局", ed2 is not None and ed2["x"] != editor["x"],
-                      f"old={editor['x']} new={ed2['x'] if ed2 else '?'}")
-            else:
-                check("max 后元素坐标跟随新布局(跳过:测试前已最大化)", True)
+            check("max 后元素坐标跟随新布局", ed2 is not None and ed2["x"] != before_max["x"],
+                  f"old={before_max['x']} new={ed2['x'] if ed2 else '?'}")
 
             # 10) stale 防护：不存在的编号必须报错而不是盲点
             print("== stale 防护 ==")

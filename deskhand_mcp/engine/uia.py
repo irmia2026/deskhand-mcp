@@ -138,6 +138,7 @@ _CACHE_PROPS = (
     "UIA_IsInvokePatternAvailablePropertyId", "UIA_IsTogglePatternAvailablePropertyId",
     "UIA_IsValuePatternAvailablePropertyId", "UIA_IsExpandCollapsePatternAvailablePropertyId",
     "UIA_IsSelectionItemPatternAvailablePropertyId",
+    "UIA_IsScrollItemPatternAvailablePropertyId",
 )
 _CACHE_PATTERN_FLAGS = (
     ("UIA_IsInvokePatternAvailablePropertyId", "invoke"),
@@ -145,6 +146,7 @@ _CACHE_PATTERN_FLAGS = (
     ("UIA_IsValuePatternAvailablePropertyId", "value"),
     ("UIA_IsExpandCollapsePatternAvailablePropertyId", "expandcollapse"),
     ("UIA_IsSelectionItemPatternAvailablePropertyId", "selectionitem"),
+    ("UIA_IsScrollItemPatternAvailablePropertyId", "scrollitem"),
 )
 _cache_supported: Optional[bool] = None  # 一次失败就不再重试（免得每次 look 都白付代价）
 
@@ -230,6 +232,11 @@ def _collect_controls_cached(hwnd: int, win_rect=None, max_depth: int = _MAX_DEP
                 name = str(el.GetCachedPropertyValue(pids["UIA_NamePropertyId"]) or "").strip()
             except Exception:
                 name = ""
+            try:
+                automation_id = str(
+                    el.GetCachedPropertyValue(pids["UIA_AutomationIdPropertyId"]) or "")
+            except Exception:
+                automation_id = ""
             if strip_bottom is not None and _looks_like_chrome(name, rect, strip_bottom):
                 chrome_skipped += 1
             else:
@@ -240,13 +247,12 @@ def _collect_controls_cached(hwnd: int, win_rect=None, max_depth: int = _MAX_DEP
                             pats[short] = True
                     except Exception:
                         pass
-                # 与逐节点路径保持一致的入选规则：有 pattern，或属于本身可交互的语义类型。
-                # 漏掉这条会让卡片被 Text/Pane/根窗口等无 pattern 元素塞满（实测踩过）。
                 etype = _type_name_by_id(ctype)
                 if pats or etype in _KEEP_TYPES:
                     out.append({
                         "ctrl": None, "el": el, "name": name,
                         "type": etype, "rect": rect, "pats": pats,
+                        "automation_id": automation_id,
                     })
         if depth < max_depth:
             try:
@@ -263,15 +269,9 @@ def _collect_controls_cached(hwnd: int, win_rect=None, max_depth: int = _MAX_DEP
 
 
 def _control_at_point(x: int, y: int, expect_name: str = "", expect_rect=None,
-                      want_action: bool = True):
-    """取屏幕上某点处的真实元素并包装成可操作的 Control，返回 (ctrl, pats)。
-
-    缓存遍历拿到的元素取不了 pattern（AutomationElementMode_None），所以动作前用
-    `ElementFromPoint` 取一次当前元素——单次跨进程调用，比重新逐节点遍历便宜得多。
-    点上拿到的常常是目标控件的**子元素**（如按钮中心是 Text），所以沿父链向上找：
-    第一个「身份匹配（名称相同或矩形 IoU≥0.6）且带所需 pattern」的元素就是目标。
-    身份对不上就返回 (None, {})，上层据此回退慢路径——宁可慢，不能打错目标。
-    """
+                      want_action: bool = True, expect_type: str = "",
+                      expect_automation_id: str = ""):
+    """取当前点上的真实控件，沿父链寻找身份匹配的可操作控件。"""
     from ctypes import wintypes
 
     _core, iuia = _iuia()
@@ -282,24 +282,24 @@ def _control_at_point(x: int, y: int, expect_name: str = "", expect_rect=None,
         ctrl = _impl().Control.CreateControlFromElement(el)
     except Exception:
         return None, {}
-    for _ in range(4):  # 最多向上找 3 层父控件
+    for _ in range(4):
         if ctrl is None:
             break
         try:
             rect = _rect_of(ctrl)
             name = (ctrl.Name or "").strip()
+            etype = _type_name_by_id(ctrl.ControlType)
+            automation_id = str(ctrl.AutomationId or "")
         except Exception:
             return None, {}
-        # pattern 一律探测（SetValue 路径必须知道有没有 value）；
-        # 「是否要求带动作 pattern」由 want_action 决定——这两件事混在一起写过一次 bug：
-        # want_action=False 时返回空 pats，SetValue 被误判成「目标不支持 ValuePattern」。
         pats = _patterns_of(ctrl)
         has_action = any(
-            k in pats for k in ("invoke", "toggle", "expandcollapse", "selectionitem")
+            k in pats for k in ("invoke", "toggle", "expandcollapse", "selectionitem", "scrollitem")
         )
+        identity = {"name": name, "rect": rect or (0, 0, 0, 0),
+                    "type": etype, "automation_id": automation_id}
         if (has_action or not want_action) and _same_target(
-            {"name": name, "rect": rect or (0, 0, 0, 0)}, expect_name, expect_rect
-        ):
+                identity, expect_name, expect_rect, expect_type, expect_automation_id):
             return ctrl, pats
         try:
             ctrl = ctrl.GetParentControl()
@@ -309,20 +309,20 @@ def _control_at_point(x: int, y: int, expect_name: str = "", expect_rect=None,
 
 
 def _resolve_action_control(hit: dict, hwnd: int, win_rect, expect_name: str,
-                            expect_rect, want_action: bool = True):
-    """把「遍历命中的条目」变成可操作的 Control，返回 (ctrl, pats)。
-
-    逐节点路径的元素自带 Control，直接用；
-    缓存路径的元素没有完整引用，改用点定位；点定位不成功则回退一次逐节点重扫。
-    """
+                            expect_rect, want_action: bool = True,
+                            expect_type: str = "", expect_automation_id: str = ""):
+    """把遍历条目解析成可操作 Control，失败时逐节点重扫一次。"""
     if hit.get("ctrl") is not None:
         return hit["ctrl"], hit["pats"]
     name = expect_name or hit.get("name", "")
     rect = expect_rect or hit.get("rect")
+    etype = expect_type or hit.get("type", "")
+    automation_id = expect_automation_id or hit.get("automation_id", "")
     ctrl, pats = _control_at_point(
         hit["rect"][0] + (hit["rect"][2] - hit["rect"][0]) // 2,
         hit["rect"][1] + (hit["rect"][3] - hit["rect"][1]) // 2,
-        name, rect, want_action=want_action,
+        name, rect, want_action=want_action, expect_type=etype,
+        expect_automation_id=automation_id,
     )
     if ctrl is not None:
         return ctrl, pats
@@ -333,7 +333,7 @@ def _resolve_action_control(hit: dict, hwnd: int, win_rect, expect_name: str,
     hit2 = _nearest(fresh, hit["rect"][0] + (hit["rect"][2] - hit["rect"][0]) // 2,
                     hit["rect"][1] + (hit["rect"][3] - hit["rect"][1]) // 2,
                     require_action=want_action)
-    if hit2 is None or not _same_target(hit2, name, rect):
+    if hit2 is None or not _same_target(hit2, name, rect, etype, automation_id):
         return None, {}
     return hit2["ctrl"], hit2["pats"]
 
@@ -367,6 +367,7 @@ def _patterns_of(ctrl) -> dict:
         ("value", "GetValuePattern"),
         ("expandcollapse", "GetExpandCollapsePattern"),
         ("selectionitem", "GetSelectionItemPattern"),
+        ("scrollitem", "GetScrollItemPattern"),
     ):
         try:
             if getattr(ctrl, getter)():
@@ -581,10 +582,15 @@ def _collect_controls_per_node(hwnd: int, win_rect=None, max_depth: int = _MAX_D
                 continue
             pats = _patterns_of(ctrl)
             etype = _type_name(uia, ctype)
+            try:
+                automation_id = str(ctrl.AutomationId or "")
+            except Exception:
+                automation_id = ""
             if pats or etype in _KEEP_TYPES:
                 out.append({
                     "ctrl": ctrl, "name": name,
                     "type": etype, "rect": rect, "pats": pats,
+                    "automation_id": automation_id,
                 })
         if depth < max_depth:
             try:
@@ -733,6 +739,7 @@ def list_elements(hwnd: int, win_rect=None, limit: int = 18,
             "x": (cl + cr) // 2, "y": (ct + cb) // 2,
             "left": cl, "top": ct, "right": cr, "bottom": cb,
             "has_icon": False, "source": "uia",
+            "automation_id": c.get("automation_id", ""),
             "uia_patterns": sorted(c["pats"].keys()),
             "_area": (cr - cl) * (cb - ct),
             "_pats": c["pats"],
@@ -782,25 +789,27 @@ def _iou(a, b) -> float:
     return inter / float(union) if union > 0 else 0.0
 
 
-def _same_target(hit: dict, expect_name: str = "", expect_rect=None) -> bool:
-    """重定位到的控件是否仍是卡片里记的那一个。
-
-    两道判据取或：名称相同，或矩形 IoU ≥ 0.6。
-    单靠名称会误拒（WinForms 输入框的可访问名会继承相邻 Label 的文本，随界面变），
-    单靠矩形会误收（布局移动后同位置换成了别的控件）——所以两者取或，
-    任一成立则认为是同一控件；都不成立就拒绝执行（交上层报 stale）。
-    """
-    if not expect_name and not expect_rect:
-        return True  # 无可校验信息（直接调用）
-    if expect_name and hit["name"] and expect_name == hit["name"]:
+def _same_target(hit: dict, expect_name: str = "", expect_rect=None,
+                 expect_type: str = "", expect_automation_id: str = "") -> bool:
+    """用稳定 ID 或名称、类型、矩形的组合校验目标，歧义时拒绝。"""
+    if not any((expect_name, expect_rect, expect_type, expect_automation_id)):
         return True
-    if expect_rect:
-        try:
-            if _iou(hit["rect"], tuple(int(v) for v in expect_rect)) >= 0.6:
-                return True
-        except Exception:
-            pass
-    return False
+    if expect_type and hit.get("type") != expect_type:
+        return False
+    try:
+        overlap = (_iou(hit["rect"], tuple(int(v) for v in expect_rect))
+                   if expect_rect else None)
+    except Exception:
+        overlap = 0.0 if expect_rect else None
+    if expect_automation_id:
+        if hit.get("automation_id") != expect_automation_id:
+            return False
+        return overlap is None or overlap >= 0.2
+    if expect_name:
+        if not hit.get("name") or hit["name"] != expect_name:
+            return False
+        return overlap is None or overlap >= 0.3
+    return overlap is not None and overlap >= 0.6
 
 
 def _nearest(controls: list[dict], x: int, y: int,
@@ -815,7 +824,7 @@ def _nearest(controls: list[dict], x: int, y: int,
     max_d2 = _MAX_REMATCH_DIST * _MAX_REMATCH_DIST
     for c in controls:
         if require_action and not any(
-            k in c["pats"] for k in ("invoke", "toggle", "expandcollapse", "selectionitem")
+            k in c["pats"] for k in ("invoke", "toggle", "expandcollapse", "selectionitem", "scrollitem")
         ):
             continue
         l, t, r, b = c["rect"]
@@ -853,18 +862,9 @@ def _read_state(ctrl, pats: dict) -> Optional[dict]:
 
 
 def invoke_at(hwnd: int, x: int, y: int, expect_name: str = "",
-              expect_rect=None) -> dict:
-    """后台点击：按优先级 Invoke > Toggle > ExpandCollapse > SelectionItem。
-
-    expect_name/expect_rect：卡片里记的名称与矩形，用于**校验重定位到的控件是否
-    已不是卡片里那一个**（界面翻页/布局变化后同坐标可能是别的控件）。
-    不匹配时返回 {ok: False, mismatch: True}，上层据此报 stale 而不是将错就错。
-
-    返回 {ok, pattern, name, state_before, state_after, state_changed, tree_changed,
-          focus_before, focus_after, focus_changed}。
-    同步阻塞，约定在 desktop.run() 线程中调用。不动鼠标；焦点是否被带走由
-    focus_changed 如实回传（部分框架的控件在动作时会把窗口带到前台）。
-    """
+              expect_rect=None, expect_type: str = "",
+              expect_automation_id: str = "", action: str = "") -> dict:
+    """在桌面 STA 线程中执行自动或显式 UIA 原生动作。"""
     if not available():
         return {"ok": False, "error": "uiautomation 不可用"}
     win_rect = _window_rect(hwnd)
@@ -875,16 +875,16 @@ def invoke_at(hwnd: int, x: int, y: int, expect_name: str = "",
     hit = _nearest(controls, x, y, require_action=True)
     if hit is None:
         return {"ok": False, "error": "该位置附近没有可后台操作的 UIA 控件"}
-    if not _same_target(hit, expect_name, expect_rect):
+    if not _same_target(hit, expect_name, expect_rect, expect_type, expect_automation_id):
         return {
             "ok": False, "mismatch": True,
             "error": (f"卡片元素已过期：该位置现在的控件是「{hit['name'] or hit['type']}」"
                       f"（{hit['type']}），与卡片记录的「{expect_name or '未命名'}」不符，"
-                      f"请重新 look/scan_scene"),
+                      f"请重新 look"),
         }
-    # 缓存遍历的元素没有完整引用，这里解析成可操作的 Control（失败则回退逐节点重扫）
-    ctrl, pats = _resolve_action_control(hit, hwnd, win_rect, expect_name, expect_rect,
-                                         want_action=True)
+    ctrl, pats = _resolve_action_control(
+        hit, hwnd, win_rect, expect_name, expect_rect, want_action=True,
+        expect_type=expect_type, expect_automation_id=expect_automation_id)
     if ctrl is None:
         return {"ok": False, "error": "无法取得该位置的可操作控件（点定位与逐节点重扫均未命中）"}
     sig_before = _signature(controls)
@@ -892,25 +892,51 @@ def invoke_at(hwnd: int, x: int, y: int, expect_name: str = "",
     focus_before = _foreground_hwnd()
 
     try:
-        if "invoke" in pats:
+        if action == "scroll_into_view":
+            ctrl.GetScrollItemPattern().ScrollIntoView()
+            pattern = action
+        elif action == "invoke":
             ctrl.GetInvokePattern().Invoke()
-            pattern = "invoke"
-        elif "toggle" in pats:
+            pattern = action
+        elif action == "toggle":
             ctrl.GetTogglePattern().Toggle()
-            pattern = "toggle"
-        elif "expandcollapse" in pats:
-            # 语义对齐点击：已展开则折叠，已折叠则展开
+            pattern = action
+        elif action in ("expand", "collapse"):
             ep = ctrl.GetExpandCollapsePattern()
-            if int(ep.ExpandCollapseState) == 1:  # Expanded
-                ep.Collapse()
-            else:
+            if action == "expand":
                 ep.Expand()
-            pattern = "expandcollapse"
-        elif "selectionitem" in pats:
+            else:
+                ep.Collapse()
+            pattern = action
+        elif action == "select":
             ctrl.GetSelectionItemPattern().Select()
-            pattern = "selectionitem"
+            pattern = action
+        elif action:
+            return {"ok": False, "error": f"未知 UIA 动作: {action}"}
         else:
-            return {"ok": False, "error": "控件无可用动作 pattern"}
+            preferred = []
+            if hit["type"] == "checkbox":
+                preferred.append("toggle")
+            elif hit["type"] in ("tab", "listitem", "treeitem"):
+                preferred.append("selectionitem")
+            elif hit["type"] in ("combobox", "menu"):
+                preferred.append("expandcollapse")
+            preferred += ["invoke", "toggle", "expandcollapse", "selectionitem"]
+            pattern = next((name for name in preferred if name in pats), "")
+            if not pattern:
+                return {"ok": False, "error": "控件无可用动作 pattern"}
+            if pattern == "invoke":
+                ctrl.GetInvokePattern().Invoke()
+            elif pattern == "toggle":
+                ctrl.GetTogglePattern().Toggle()
+            elif pattern == "selectionitem":
+                ctrl.GetSelectionItemPattern().Select()
+            else:
+                ep = ctrl.GetExpandCollapsePattern()
+                if int(ep.ExpandCollapseState) == 1:
+                    ep.Collapse()
+                else:
+                    ep.Expand()
     except Exception as e:
         return {"ok": False, "error": f"UIA 动作执行失败: {e}"}
 

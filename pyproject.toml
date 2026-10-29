@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deskhand-mcp"
-version = "0.1.0"
-description = "Windows 桌面操控 MCP server（host-as-VL 架构）：确定性三级定位 + 精确界面读写，视觉判断交回主模型"
+version = "0.3.0"
+description = "Windows 桌面操控 MCP server：精确 UIA 读写、OCR/CV 感知与全屏 Agent 操作覆盖层"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.10"

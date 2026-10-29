@@ -4,7 +4,7 @@ ocr.py — 本地 OCR 引擎（可插拔，零硬依赖）。
 优先级：
 1. WinRT OCR（Windows 10+ 系统自带，需 `pip install winsdk`）——离线、免费、中文好；
 2. RapidOCR（需 `pip install rapidocr-onnxruntime`）——跨平台本地模型；
-3. 两者都不可用 → available() 返回 False，定位引擎自动降级到 VL 漏斗。
+3. 两者都不可用 → available() 返回 False，由 UIA 或主模型看图继续定位。
 
 所有识别函数为同步阻塞，约定在 desktop.run() 的专用线程中调用。
 """
@@ -362,6 +362,22 @@ def _recognize_once(image) -> list[dict]:
     return []
 
 
+def _merge_recognition_results(base: list[dict], extra: list[dict]) -> list[dict]:
+    words = [dict(item) for item in base if not item.get("line")]
+    for candidate in extra:
+        if candidate.get("line"):
+            continue
+        duplicate = any(
+            _rect_iou(candidate, existing) >= 0.5
+            or (abs(candidate["cx"] - existing["cx"]) <= 6
+                and abs(candidate["cy"] - existing["cy"]) <= 6)
+            for existing in words
+        )
+        if not duplicate:
+            words.append(dict(candidate))
+    return words + _rebuild_lines(words)
+
+
 def recognize(image, min_words: int = _WHOLE_TRIGGER_WORDS,
               min_char_height: int = _WHOLE_TRIGGER_H,
               mode: str = "auto", stats: Optional[dict] = None) -> list[dict]:
@@ -372,7 +388,7 @@ def recognize(image, min_words: int = _WHOLE_TRIGGER_WORDS,
     - auto（默认）：先试**整图放大**（词数不足或字高 <12px 时）；整图放大受引擎边长
       上限限制而不可行（scale ≤ 1.1）且中位字高 < _TILE_TRIGGER_H 时，改跑**分块放大**；
     - force：直接跑分块放大；off：只跑一遍。
-    选用哪一遍：词数更多者胜（持平则取放大版——细节更清）。
+    两遍结果按位置去重合并，不再用词数整包替换，避免单遍正确文字被分块结果挤掉。
     stats（可选，传入则写入诊断）：{"pass": ..., "scale": ..., "tiled": bool,
       "words_before": ..., "words_after": ..., "median_h_before": ..., "median_h_after": ...}
     """
@@ -393,7 +409,8 @@ def recognize(image, min_words: int = _WHOLE_TRIGGER_WORDS,
     # 引擎内部又把它缩回去，等于双重重采样；而分块放大在同一组用例上全面胜出
     # （10px→21.0%、12px→16.0%、14px→9.9%、16px→11.1%）。
     # 图片很小时分块退化为单块，效果等同整图放大，所以统一走分块即可。
-    needs_tiled = mode == "force" or (h_before < _TILE_TRIGGER_H) or len(words) < min_words
+    needs_tiled = (mode == "force" or h_before < max(min_char_height, _TILE_TRIGGER_H)
+                   or len(words) < min_words)
     if not needs_tiled or (w * h) < 200 * 200:
         return items
     try:
@@ -409,15 +426,11 @@ def recognize(image, min_words: int = _WHOLE_TRIGGER_WORDS,
                       "tile_px": _TILE_PX, "overlap": _TILE_OVERLAP,
                       "words_after": len(words3),
                       "median_h_after": round(_median_h(words3), 1)})
-    # 词数更多者胜；持平取分块版（源分辨率更高）。词数明显变少则保留原结果（防退化）
-    if len(words3) >= len(words):
-        logger.info("OCR 分块放大命中: %d→%d 词 (scale=%.1f, tile=%d)",
-                    len(words), len(words3), _TILE_SCALE, _TILE_PX)
-        if stats is not None:
-            stats["pass"] = "tiled"
-        return items3
-    logger.info("OCR 分块放大词数更少（%d < %d），保留单遍结果", len(words3), len(words))
-    return items
+    merged = _merge_recognition_results(items, items3)
+    if stats is not None:
+        stats["pass"] = "merged"
+        stats["words_after"] = len([it for it in merged if not it.get("line")])
+    return merged
 
 
 def items_to_elements(items: list[dict], origin_x: int = 0, origin_y: int = 0) -> list[dict]:
