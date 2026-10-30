@@ -258,6 +258,35 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         click.assert_not_called()
 
+    async def test_confirmed_uia_action_updates_memory(self):
+        el = scene.register(
+            [{"name": "查看", "type": "menu", "source": "uia", "x": 40, "y": 20,
+              "left": 20, "top": 10, "right": 60, "bottom": 30}],
+            window_hwnd=11,
+        )[0]
+        win = {"hwnd": 11, "title": "Fixture", "rect": (0, 0, 100, 100)}
+
+        async def run(fn, *args, **kwargs):
+            if fn is desktop.window_from_hwnd:
+                return win
+            if fn is uia.invoke_at:
+                return {"ok": True, "state_changed": True,
+                        "state_before": {"expandcollapse": 0},
+                        "state_after": {"expandcollapse": 1}, "tree_changed": True}
+            raise AssertionError(fn)
+
+        with (
+            patch.object(tools, "_apply_focus", new=AsyncMock(return_value=(win, False, None))),
+            patch.object(desktop, "run", side_effect=run),
+            patch.object(tools, "_update_memory") as update,
+        ):
+            result = await tools.element_action(el["id"], "expand")
+        self.assertTrue(result["verified"])
+        update.assert_called_once()
+        self.assertEqual(update.call_args.args[1], "查看")
+        self.assertIs(update.call_args.args[0]["win"], win)
+        self.assertIsNone(update.call_args.args[0]["shot"])
+
     async def test_launch_wait_does_not_choose_an_unrelated_new_window(self):
         unrelated = {"hwnd": 2, "rect": (0, 0, 100, 100)}
         target = {"hwnd": 3, "rect": (0, 0, 100, 100)}
@@ -278,6 +307,21 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
             result = await tools.launch_app("fixture.exe", wait_for_window=True)
         self.assertTrue(result["ready"])
         self.assertEqual(result["window"]["hwnd"], 3)
+
+    async def test_tool_result_contains_exit_hint(self):
+        controller = MagicMock()
+        controller.is_paused.return_value = False
+        controller.begin.return_value = 1
+
+        async def action():
+            return {"ok": True}
+
+        with patch.object(overlay, "get_overlay", return_value=controller):
+            blocks = await server._wrap(action)()
+        result = json.loads(blocks[0].text)
+        self.assertIn("agent_control(action='exit')", result["agent_exit_hint"])
+        self.assertIn("结束对话", result["agent_exit_hint"])
+        self.assertIn("完成全部电脑操作后必须调用 exit", tools.agent_control.__doc__)
 
     async def test_text_only_host_never_receives_image_blocks(self):
         controller = MagicMock()
@@ -337,6 +381,27 @@ class CollectionTests(unittest.TestCase):
         with patch.object(desktop, "enum_windows", return_value=wins):
             with self.assertRaises(ValueError):
                 desktop.find_window("Fixture")
+
+    def test_ocr_preserves_named_uia_control_and_names_unnamed_control(self):
+        named = {
+            "name": "高度", "type": "control", "x": 100, "y": 100,
+            "left": 80, "top": 80, "right": 120, "bottom": 120,
+        }
+        unnamed = {
+            "name": "", "type": "control", "x": 300, "y": 100,
+            "left": 280, "top": 80, "right": 320, "bottom": 120,
+        }
+        words = [
+            {"name": "609", "type": "text", "x": 100, "y": 100,
+             "left": 80, "top": 80, "right": 120, "bottom": 120},
+            {"name": "800", "type": "text", "x": 300, "y": 100,
+             "left": 280, "top": 80, "right": 320, "bottom": 120},
+        ]
+        remaining = tools._dedupe_ocr_uia(words, [named, unnamed])
+        self.assertEqual(named["name"], "高度")
+        self.assertEqual(named["ocr_text"], "609")
+        self.assertEqual(unnamed["name"], "800")
+        self.assertEqual(remaining, [])
 
     def test_uia_can_collect_all_for_pagination(self):
         controls = [

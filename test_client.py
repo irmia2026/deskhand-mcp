@@ -104,7 +104,7 @@ async def dismiss_save_dialog(s: ClientSession, retries: int = 3) -> bool:
         if not await _active_tab_is_test(s):
             return True
         # 元素兜底路径（OCR 去空格匹配；按钮在图上但通道不稳）
-        for scope in ({"window": "Notepad"}, {}):
+        for scope in ({"window": ""}, {}):
             data, _ = await call(s, "look", dict(scope))
             btns = [e for e in (data.get("elements") or []) if _match_dialog(e.get("name") or "")]
             if not btns:
@@ -122,10 +122,14 @@ async def main() -> int:
         command=sys.executable,
         args=["-m", "deskhand_mcp.server"],
         cwd=HERE,
+        env=dict(os.environ),
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as s:
-            await s.initialize()
+            initialized = await s.initialize()
+            instructions = initialized.instructions or ""
+            check("宿主说明要求完成后退出", "完成全部电脑操作后必须调用" in instructions
+                  and "agent_control(action='exit')" in instructions)
             print("== initialize 完成 ==")
 
             tools_res = await s.list_tools()
@@ -137,32 +141,24 @@ async def main() -> int:
             check("tools/list 23 个工具", names == want,
                   f"缺 {want - names} 多 {names - want}" if names != want else "")
 
-            # 始终新建独立测试标签，绝不复用或关闭用户的未保存草稿
-            data, _ = await call(s, "window_action",
-                                 {"action": "restore", "title": "Notepad"})
-            data, _ = await call(s, "window_action",
-                                 {"action": "focus", "title": "Notepad"})
+            # 启动独立空白窗口，不选择或清理用户现有记事本
+            launched, _ = await call(s, "launch_app", {
+                "app": "notepad.exe", "wait_for_window": True, "timeout": 10})
+            candidates = launched.get("candidate_windows") or []
+            new_notepads = [w for w in candidates if "notepad" in w.get("title", "").lower()]
+            window = launched.get("window") or (new_notepads[0] if len(new_notepads) == 1 else None)
+            check("独立记事本窗口已识别", window is not None)
+            if window is None:
+                raise RuntimeError("无法确认独立记事本窗口，停止测试")
+            hwnd = window["hwnd"]
+            focused, _ = await call(s, "window_action", {
+                "action": "focus", "hwnd": hwnd, "title": "Notepad"})
+            check("独立记事本已聚焦", focused.get("ok") is True)
             need_new_tab = True
-
-            # 0.5) 关掉历史遗留的含测试文本的标签（防上次失败残留干扰污染检查）
-            for _ in range(6):
-                data, _ = await call(s, "look", {"window": "Notepad"})
-                els = data.get("elements") or []
-                dirty = [e for e in els if any(marker in (e.get("name") or "")
-                         for marker in ("deskhand-mcp-e2e", "select-me-line", "capability"))]
-                if not dirty:
-                    break
-                print(f"  清理遗留测试标签: {dirty[0].get('name', '')[:30]}")
-                # 真实鼠标点标签（activate），UIA invoke 对 selectionitem 不保证切换
-                await call(s, "click", {"x": dirty[0]["x"], "y": dirty[0]["y"]})
-                await asyncio.sleep(0.5)
-                await call(s, "press_key", {"keys": ["ctrl", "w"]})
-                await asyncio.sleep(0.8)
-                await dismiss_save_dialog(s)
 
             # 2) look
             print("== look(Notepad) ==")
-            data, img = await call(s, "look", {"window": "Notepad"})
+            data, img = await call(s, "look", {"window": ""})
             check("look ok", data.get("ok") is True, str(data.get("error", ""))[:200])
             if img:
                 save_img(img, "01_look_annotated.png")
@@ -185,7 +181,7 @@ async def main() -> int:
                 await asyncio.sleep(1.0)
 
             # 重新 look 拿新快照
-            data, _ = await call(s, "look", {"window": "Notepad"})
+            data, _ = await call(s, "look", {"window": ""})
             editor = find_el(data.get("elements") or [], "文本编辑器", "Text Editor", "编辑")
             check("新快照里仍有编辑器", editor is not None)
 
@@ -194,7 +190,7 @@ async def main() -> int:
             # 4) append_text
             print("== append_text ==")
             data, _ = await call(s, "append_text",
-                                 {"text": MARK, "window": "Notepad",
+                                 {"text": MARK, "window": "",
                                   "element": editor["id"]})
             check("append ok", data.get("ok") is True, str(data.get("error", ""))[:300])
             check("append 回读逐字验证", data.get("verified") is True,
@@ -203,7 +199,7 @@ async def main() -> int:
             # 5) read_document 精确读回
             print("== read_document ==")
             data, _ = await call(s, "read_document",
-                                 {"window": "Notepad", "element": editor["id"]})
+                                 {"window": "", "element": editor["id"]})
             check("read_document ok", data.get("ok") is True, str(data.get("error", ""))[:300])
             check("read_document exact", data.get("exact") is True,
                   f"source={data.get('source')}")
@@ -214,7 +210,7 @@ async def main() -> int:
             # 6) set_value 不带 confirm 必须被拒绝
             print("== set_value 无确认（应拒绝）==")
             data, _ = await call(s, "set_value",
-                                 {"text": "覆盖内容", "window": "Notepad",
+                                 {"text": "覆盖内容", "window": "",
                                   "element": editor["id"]})
             check("无 confirm 被拒绝", data.get("ok") is False and "拒绝" in str(data.get("error", "")),
                   str(data.get("error", ""))[:150])
@@ -223,12 +219,12 @@ async def main() -> int:
             print("== set_value confirm_overwrite=true ==")
             data, _ = await call(s, "set_value",
                                  {"text": MARK + "\n覆盖后的全文", "confirm_overwrite": True,
-                                  "window": "Notepad", "element": editor["id"]})
+                                  "window": "", "element": editor["id"]})
             check("覆盖执行 ok", data.get("ok") is True, str(data.get("error", ""))[:300])
             check("覆盖回读验证", data.get("verified") is True,
                   f"new_len={data.get('new_len')}")
             data, _ = await call(s, "read_document",
-                                 {"window": "Notepad", "element": editor["id"]})
+                                 {"window": "", "element": editor["id"]})
             got = (data.get("text") or "").replace("\r\n", "\n").replace("\r", "\n")
             check("覆盖后全文正确", got == MARK + "\n覆盖后的全文",
                   repr((data.get("text") or "")[:60]))
@@ -243,23 +239,21 @@ async def main() -> int:
             check("已关闭测试标签（不保存）", gone)
 
             await asyncio.sleep(0.5)
-            # 污染检查：全新 look 后读 SELF-BRIEF 编辑器（e1 现在是可读写控件排最前，
-            # SELF-BRIEF 的编辑器要在窗口标题匹配它时读）——用窗口标题区分两个标签
-            data, _ = await call(s, "window_action",
-                                 {"action": "focus", "title": "Notepad"})
-            title_now = str(data.get("title", ""))
-            data, _ = await call(s, "look", {"window": title_now[:20] or "Notepad"})
+            # 在同一独立窗口中确认初始空白标签未被污染
+            data, _ = await call(s, "window_action", {"action": "focus", "hwnd": hwnd})
+            data, _ = await call(s, "look", {"hwnd": hwnd})
             elements = data.get("elements") or []
             ed = find_el(elements, "文本编辑器", "Text Editor")
             if ed:
-                data, _ = await call(s, "read_document",
-                                     {"window": title_now[:20] or "Notepad",
-                                      "element": ed["id"]})
+                data, _ = await call(s, "read_document", {"window": "", "element": ed["id"]})
                 leftover = data.get("text") or ""
                 check("SELF-BRIEF 标签未被污染", MARK not in leftover and data.get("ok") is True,
                       f"ok={data.get('ok')} len={len(leftover)} err={str(data.get('error'))[:80]}")
             else:
                 check("SELF-BRIEF 标签未被污染", False, "重 look 后找不到编辑器")
+            if gone:
+                closed, _ = await call(s, "window_action", {"action": "close", "hwnd": hwnd})
+                check("独立测试窗口已清理", closed.get("ok") is True)
 
     print(f"\n===== 结果: {len(PASS)} PASS / {len(FAIL)} FAIL =====")
     for f in FAIL:

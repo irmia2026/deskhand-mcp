@@ -96,7 +96,7 @@ async def tests():
                         "typing replaces selection without implicit newline",
                         typed.get("ok") is True
                         and after.get("value") == "替换 selected 😀",
-                        str(after),
+                        str({"typed": typed, "after": after}),
                     )
                     app, _ = await call(
                         s,

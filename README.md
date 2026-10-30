@@ -94,7 +94,7 @@ deskhand-mcp                     # stdio server
 - `never`：禁止抢焦点，真实输入目标不在前台时拒绝执行。
 
 ```text
-list_windows → look(hwnd=...) → 使用最新元素编号 → 需要时用 next_cursor 翻页
+list_windows → look(hwnd=...) → 使用最新元素编号 → 需要时用 next_cursor 翻页 → 完成后 agent_control(action="exit")
 ```
 
 OCR 与 CV 会按视觉行和包含关系去重：整段文字保留为一个语义元素，自绘控件保留 CV 可点击区域并合并 OCR 文字。
@@ -105,6 +105,7 @@ OCR 与 CV 会按视觉行和包含关系去重：整段文字保留为一个语
 2. `find_element(query="保存", control_type="button", image=false)`，从候选中选择；直接使用返回的 `click_args`，无需猜坐标。
 3. UIA 不足时，再 `look(hwnd=..., source="all")` 启用 OCR/CV；可按颜色、形状、位置筛选并查看候选图集。
 4. 看不清时 `inspect_region(element=...)` 或 `inspect_region(cell="B2")`，然后携带返回的 `image_id` 点击。可连续九宫格放大，工具处理负屏幕原点、缩放和像素换算。
+5. 全部电脑操作完成后，必须调用 `agent_control(action="exit")` 关闭覆盖层；不能只结束对话或断开 MCP。每次工具返回中的 `agent_exit_hint` 会提醒这一步。
 
 `look` 默认将返回图片最长边限制为 1280px（`max_image_size=512..2048`），避免宿主再次大幅缩图；`image_size` 是实际返回图片尺寸，`size` 仍是原始物理截图尺寸。模型应使用 `image_id` 与图片内坐标，不要把二者混用或自行乘 DPI。重新 look 后，旧图片编号失效。
 
@@ -144,7 +145,7 @@ DeepSeek 等宿主的接入与评测约定见 [文本优先操作指南](docs/TE
 
 推荐工作流：`list_windows` → `look(hwnd=...)` → 使用返回的最新元素编号操作。元素编号带快照代次，重新 `look` 后旧编号立即失效，不能混用。
 
-记忆库位于 `%LOCALAPPDATA%\deskhand-mcp\deskhand_memory.db`，可用 `DESKHAND_DATA_DIR` 修改目录。
+记忆库位于 `%LOCALAPPDATA%\deskhand-mcp\deskhand_memory.db`，可用 `DESKHAND_DATA_DIR` 修改目录。只有 UIA 状态回读确认的动作才写入记忆；坐标点击或单纯像素变化不会写入。记忆命中仍需实时 UIA 名称和位置复核，不会仅凭低区分度图像哈希点击。
 
 ## 安全与结果语义
 
@@ -172,7 +173,7 @@ python test_overlay_service.py
 python -m pip wheel . --no-deps --wheel-dir test_artifacts/wheel
 ```
 
-GUI 测试会真实操作隔离的记事本测试标签，并验证读回、选区、窗口矩形、记忆命中和覆盖层行为。`test_canvas_ui.py` 还会验证像素文字自绘 UI 与完全无文字 UI 的 OCR/CV、分页、网格、点击、拖拽和等待变化。请勿把其他应用中的未保存内容当作测试目标。
+记事本测试会启动独立空白窗口，操作其中的新测试标签，并在结束后清理窗口；不会选择或清理用户现有记事本。测试验证读回、选区、窗口矩形、记忆命中和覆盖层行为。`test_canvas_ui.py` 还会验证像素文字自绘 UI 与完全无文字 UI 的 OCR/CV、分页、网格、点击、拖拽和等待变化。请勿把其他应用中的未保存内容当作测试目标。
 
 `test_desktop_workflows.py` 创建独立原生 Win32 窗口，验证中文/emoji、选区替换、明确追加、重复控件、跨窗口误输入拦截、坐标归属和窗口移动后的恢复，不操作已有记事本。GUI 测试必须串行运行，避免多个测试争抢桌面。
 

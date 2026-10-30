@@ -14,28 +14,37 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
 async def copied_text(session) -> str:
-    data, _ = await call(session, "look", {"window": "Notepad", "image": False})
+    data, _ = await call(session, "look", {"window": "", "image": False})
     editor = find_el(data.get("elements") or [], "文本编辑器", "Text Editor")
     selected, _ = await call(session, "read_selection", {
-        "window": "Notepad", "element": editor["id"]})
+        "window": "", "element": editor["id"]})
     return selected.get("text") or ""
 
 
 async def main() -> int:
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "deskhand_mcp.server"], cwd=ROOT)
+        command=sys.executable, args=["-m", "deskhand_mcp.server"], cwd=ROOT,
+        env=dict(os.environ))
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             apps, _ = await call(session, "list_apps", {})
             check("StartApps 可枚举", apps.get("count", 0) > 0)
-            windows, _ = await call(session, "list_windows", {})
-            notepads = [w for w in windows.get("windows") or []
-                        if "notepad" in w.get("title", "").lower() or "记事本" in w.get("title", "")]
-            check("list_windows 找到记事本", bool(notepads))
-            hwnd = notepads[0]["hwnd"]
-            focused, _ = await call(session, "window_action", {"action": "focus", "hwnd": hwnd})
+            launched, _ = await call(session, "launch_app", {
+                "app": "notepad.exe", "wait_for_window": True, "timeout": 10})
+            candidates = launched.get("candidate_windows") or []
+            new_notepads = [w for w in candidates if "notepad" in w.get("title", "").lower()]
+            window = launched.get("window") or (new_notepads[0] if len(new_notepads) == 1 else None)
+            check("独立记事本窗口已识别", window is not None)
+            if window is None:
+                raise RuntimeError("无法确认独立记事本窗口，停止测试")
+            hwnd = window["hwnd"]
+            focused, _ = await call(session, "window_action", {
+                "action": "focus", "hwnd": hwnd, "title": "Notepad"})
             check("hwnd 聚焦窗口", focused.get("ok") is True and focused.get("matched_via") == "hwnd")
+            windows, _ = await call(session, "list_windows", {})
+            check("list_windows 找到独立记事本", any(
+                w.get("hwnd") == hwnd for w in windows.get("windows") or []))
 
             data, _ = await call(session, "look", {"hwnd": hwnd, "image": False})
             check("hwnd look", data.get("ok") is True)
@@ -46,7 +55,7 @@ async def main() -> int:
             editor = find_el(data.get("elements") or [], "文本编辑器", "Text Editor")
             await call(session, "append_text", {
                 "text": "deskhand-mcp-e2e-capability-line\n第二行 capability",
-                "window": "Notepad", "element": editor["id"]})
+                "window": "", "element": editor["id"]})
 
             data, _ = await call(session, "look", {"hwnd": hwnd, "image": False})
             bold = find_el(data.get("elements") or [], "加粗")
@@ -93,6 +102,9 @@ async def main() -> int:
             await asyncio.sleep(0.8)
             cleaned = await dismiss_save_dialog(session)
             check("清理测试标签", cleaned)
+            if cleaned:
+                closed, _ = await call(session, "window_action", {"action": "close", "hwnd": hwnd})
+                check("独立测试窗口已清理", closed.get("ok") is True)
     print(f"\n===== 结果: {len(PASS)} PASS / {len(FAIL)} FAIL =====")
     return 1 if FAIL else 0
 

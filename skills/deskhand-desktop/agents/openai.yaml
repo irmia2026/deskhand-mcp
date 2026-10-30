@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deskhand 桌面操作"
+  short_description: "用简短 UI 常识帮助弱模型正确操作，正常流程直接做，遇到歧义再检查"
+  default_prompt: "请使用 $deskhand-desktop 完成桌面任务，遵循 UI 常识，避免不必要的截图和重复回读。"
