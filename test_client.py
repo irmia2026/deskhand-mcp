@@ -130,11 +130,11 @@ async def main() -> int:
 
             tools_res = await s.list_tools()
             names = {t.name for t in tools_res.tools}
-            want = {"look", "scene_grid", "click", "verify_point", "type_text",
+            want = {"look", "find_element", "inspect_region", "scene_grid", "click", "verify_point", "type_text",
                     "read_value", "read_selection", "read_document", "append_text", "set_value",
                     "press_key", "scroll", "drag", "drag_path", "wait_change", "window_action",
                     "list_windows", "list_apps", "launch_app", "element_action", "agent_control"}
-            check("tools/list 21 个工具", names == want,
+            check("tools/list 23 个工具", names == want,
                   f"缺 {want - names} 多 {names - want}" if names != want else "")
 
             # 始终新建独立测试标签，绝不复用或关闭用户的未保存草稿

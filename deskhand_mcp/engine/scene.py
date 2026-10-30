@@ -11,6 +11,8 @@ _snapshot: dict = {
     "ts": 0.0, "window": "", "hwnd": None, "app": "", "scope": "window",
     "generation": 0, "elements": [], "image": None, "origin": (0, 0),
 }
+_views: dict = {}
+_view_seq = 0
 
 
 def _expired() -> bool:
@@ -26,6 +28,7 @@ def register(elements: list[dict], window_title: str = "",
     if old_image is not None:
         old_image.close()
     generation = int(_snapshot.get("generation", 0)) + 1
+    _views.clear()
     numbered = []
     for i, el in enumerate(elements):
         item = dict(el)
@@ -94,6 +97,47 @@ def current_context() -> dict:
     }
 
 
+def elements() -> list[dict]:
+    return [] if _expired() else [dict(el) for el in _snapshot["elements"]]
+
+
+def register_view(screen_rect, image_size) -> dict:
+    """Record an exact affine mapping, independent of display DPI and model resizing."""
+    global _view_seq
+    if _expired():
+        raise ValueError("快照已过期，请重新 look")
+    _view_seq += 1
+    image_id = f"g{current_generation()}v{_view_seq}"
+    rect = [int(v) for v in screen_rect]
+    width, height = (int(v) for v in image_size)
+    if width <= 0 or height <= 0 or rect[2] <= rect[0] or rect[3] <= rect[1]:
+        raise ValueError("无效图像范围")
+    mapping = {"image_id": image_id, "image_size": [width, height],
+               "screen_rect": rect, "coordinate_space": "image_pixels",
+               "scale_to_screen": [(rect[2]-rect[0])/width, (rect[3]-rect[1])/height],
+               "origin_screen": rect[:2], "generation": current_generation()}
+    _views[image_id] = mapping
+    if len(_views) > 64:
+        del _views[next(iter(_views))]
+    return dict(mapping)
+
+
+def view(image_id: str) -> dict:
+    if _expired() or image_id not in _views:
+        raise ValueError("stale：图像编号不存在或已过期，请重新 look/inspect_region")
+    return dict(_views[image_id])
+
+
+def image_point(image_id: str, x: float, y: float) -> tuple[int, int]:
+    import math
+    mapping = view(image_id)
+    width, height = mapping["image_size"]
+    if not math.isfinite(x) or not math.isfinite(y) or not 0 <= x < width or not 0 <= y < height:
+        raise ValueError("图内坐标越界；请使用返回的 image_size 像素坐标")
+    l,t,r,b = mapping["screen_rect"]
+    return min(r-1, int(l+x*(r-l)/width)), min(b-1, int(t+y*(b-t)/height))
+
+
 def matches_window(hwnd) -> bool:
     expected = current_hwnd()
     return expected is not None and int(expected) == int(hwnd)
@@ -140,6 +184,7 @@ def page(limit: int, cursor: str = "", source: str = "all", kind: str = "all") -
 
 
 def clear() -> None:
+    _views.clear()
     image = _snapshot.get("image")
     if image is not None:
         image.close()

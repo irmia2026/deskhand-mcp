@@ -465,7 +465,7 @@ def items_to_elements(items: list[dict], origin_x: int = 0, origin_y: int = 0) -
     return elements
 
 
-def find_text(items: list[dict], target: str) -> Optional[dict]:
+def find_text_candidates(items: list[dict], target: str) -> list[dict]:
     """在 OCR 结果中查找目标文字（忽略大小写与空白）。
 
     匹配策略（修复同行多按钮误点）：
@@ -476,7 +476,7 @@ def find_text(items: list[dict], target: str) -> Optional[dict]:
     """
     t = "".join(target.split()).lower()
     if not t:
-        return None
+        return []
 
     def norm(s) -> str:
         return "".join(str(s).split()).lower()
@@ -495,9 +495,23 @@ def find_text(items: list[dict], target: str) -> Optional[dict]:
     for pool in (words, lines):
         hits = exact(pool)
         if hits:
-            return hits[0]
-    for pool in (words, lines):
-        hits = contains(pool)
-        if hits:
-            return hits[0]
+            break
+    else:
+        hits=[]
+        for pool in (words, lines):
+            hits = contains(pool)
+            if hits:
+                break
+    unique=[]
+    for hit in hits:
+        if not any(abs(hit["cx"]-prev["cx"])<=8 and abs(hit["cy"]-prev["cy"])<=8 for prev in unique):
+            unique.append(hit)
+    return unique
+
+
+def find_text(items: list[dict], target: str) -> Optional[dict]:
+    """Only an unambiguous OCR match may become an automatic input location."""
+    hits=find_text_candidates(items,target)
+    if len(hits)==1:
+        return hits[0]
     return None

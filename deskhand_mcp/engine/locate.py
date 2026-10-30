@@ -60,6 +60,82 @@ def _draw_grid(img, cols: int = 3, rows: int = 3):
     return out, cells
 
 
+def draw_coordinate_grid(img, screen_rect=None, spacing=None):
+    """Draw readable image-pixel rulers and retain the exact screen-coordinate mapping."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError("截图尺寸必须为正数")
+    rect = (0, 0, w, h) if screen_rect is None else tuple(int(v) for v in screen_rect)
+    if len(rect) != 4 or rect[2] <= rect[0] or rect[3] <= rect[1]:
+        raise ValueError("无效屏幕范围")
+    if spacing is None:
+        target = max(w, h) / 14
+        spacing = next((v for v in (50, 100, 200, 250, 500, 1000, 2000)
+                        if v >= target), 2000)
+    step = int(spacing)
+    if step <= 0:
+        raise ValueError("网格间距必须为正数")
+    left, top, right, bottom = rect
+    x_lines = [{"image_x": x,
+                "screen_x": left + int(x * (right - left) / w)}
+               for x in range(0, w, step)]
+    y_lines = [{"image_y": y,
+                "screen_y": top + int(y * (bottom - top) / h)}
+               for y in range(0, h, step)]
+
+    base = img.convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font_size = max(16, min(28, round(max(w, h) / 80)))
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except Exception:
+        font = ImageFont.load_default()
+    for line in x_lines:
+        draw.line((line["image_x"], 0, line["image_x"], h),
+                  fill=(43, 84, 229, 96), width=1)
+    for line in y_lines:
+        draw.line((0, line["image_y"], w, line["image_y"]),
+                  fill=(43, 84, 229, 96), width=1)
+
+    label_height = font_size + 10
+
+    def label(text, x, y):
+        box = draw.textbbox((0, 0), text, font=font, anchor="lt")
+        tw, th = box[2], box[3]
+        x = max(2, min(int(x), w - tw - 2))
+        y = max(2, min(int(y), h - th - 2))
+        draw.rectangle((x - 3, y - 3, x + tw + 3, y + th + 3),
+                       fill=(8, 15, 30, 220))
+        draw.text((x, y), text, font=font, fill="white", anchor="lt")
+
+    for line in x_lines:
+        text = str(line["image_x"])
+        tw = draw.textbbox((0, 0), text, font=font, anchor="lt")[2]
+        x = line["image_x"] + 5 if line["image_x"] + tw + 10 < w else line["image_x"] - tw - 5
+        label(text, x, 4)
+        label(text, x, h - label_height - 2)
+    for line in y_lines:
+        text = str(line["image_y"])
+        th = draw.textbbox((0, 0), text, font=font, anchor="lt")[3]
+        y = min(max(line["image_y"] + 5, label_height + 8), h - label_height - th - 4)
+        label(text, 4, y)
+        label(text, w - draw.textbbox((0, 0), text, font=font, anchor="lt")[2] - 5, y)
+
+    out = Image.alpha_composite(base, overlay)
+    if img.mode != "RGBA":
+        out = out.convert("RGB")
+    metadata = {
+        "kind": "image_coordinates", "coordinate_space": "image_pixels",
+        "image_size": [w, h], "origin_screen": [left, top],
+        "screen_rect": [left, top, right, bottom], "spacing_px": step,
+        "x_lines": x_lines, "y_lines": y_lines,
+    }
+    return out, metadata
+
+
 # 元素标注配色（按来源）
 _SOURCE_COLORS = {
     "ocr": "#00C853",   # 绿：OCR 文字（精确）

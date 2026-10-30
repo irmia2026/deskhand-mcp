@@ -156,5 +156,44 @@ class ServerPauseTests(unittest.TestCase):
             overlay._instance = previous
 
 
+class CoordinateGridTests(unittest.TestCase):
+    def test_grid_labels_are_image_pixels_with_screen_mapping(self):
+        from PIL import Image
+        from deskhand_mcp.engine import locate
+
+        source = Image.new("RGB", (640, 360), (20, 30, 40))
+        grid, metadata = locate.draw_coordinate_grid(
+            source, screen_rect=(-10, 120, 630, 480), spacing=100)
+        self.assertEqual(grid.size, source.size)
+        self.assertEqual(metadata["kind"], "image_coordinates")
+        self.assertEqual(metadata["coordinate_space"], "image_pixels")
+        self.assertEqual(metadata["image_size"], [640, 360])
+        self.assertEqual(metadata["origin_screen"], [-10, 120])
+        self.assertEqual(metadata["x_lines"][0], {"image_x": 0, "screen_x": -10})
+        self.assertEqual(metadata["x_lines"][1], {"image_x": 100, "screen_x": 90})
+        self.assertEqual(metadata["y_lines"][1], {"image_y": 100, "screen_y": 220})
+        for line in metadata["x_lines"]:
+            self.assertEqual(line["screen_x"],
+                             -10 + int(line["image_x"] * 640 / 640))
+        for line in metadata["y_lines"]:
+            self.assertEqual(line["screen_y"],
+                             120 + int(line["image_y"] * 360 / 360))
+
+    def test_grid_adapts_spacing_without_resizing(self):
+        from PIL import Image
+        from deskhand_mcp.engine import locate
+
+        source = Image.new("RGBA", (800, 500), (0, 0, 0, 0))
+        grid, metadata = locate.draw_coordinate_grid(source)
+        self.assertEqual(grid.size, source.size)
+        self.assertEqual(grid.mode, "RGBA")
+        self.assertEqual(metadata["spacing_px"], 100)
+        self.assertEqual(metadata["screen_rect"], [0, 0, 800, 500])
+        self.assertEqual(metadata["x_lines"][-1]["image_x"], 700)
+        self.assertEqual(metadata["y_lines"][-1]["image_y"], 400)
+        with self.assertRaises(ValueError):
+            locate.draw_coordinate_grid(source, spacing=0)
+
+
 if __name__ == "__main__":
     unittest.main()

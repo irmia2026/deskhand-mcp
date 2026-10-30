@@ -226,7 +226,9 @@ def _process_fallback(kw: str) -> Optional[dict]:
     ]
     if not cands:
         return None
-    return max(cands, key=lambda w: (w["rect"][2] - w["rect"][0]) * (w["rect"][3] - w["rect"][1]))
+    if len(cands)>1:
+        raise ValueError(f"应用有多个可用窗口，请 list_windows 后指定 hwnd：{[(w['hwnd'],w['title']) for w in cands]}")
+    return cands[0]
 
 
 def find_window(keyword: str, include_iconic: bool = False) -> Optional[dict]:
@@ -249,13 +251,13 @@ def find_window(keyword: str, include_iconic: bool = False) -> Optional[dict]:
     def _ok(w: dict) -> bool:
         return True if include_iconic else _usable(w)
 
-    for w in wins:
-        if w["title"].lower().strip() in kws and _ok(w):
-            return w
-    for w in wins:
-        t = w["title"].lower()
-        if any(k in t for k in kws) and _ok(w):
-            return w
+    exact=[w for w in wins if w["title"].lower().strip() in kws and _ok(w)]
+    contained=[w for w in wins if any(k in w["title"].lower() for k in kws) and _ok(w)]
+    matches=exact or contained
+    if len(matches)>1:
+        raise ValueError(f"窗口标题不唯一，请 list_windows 后指定 hwnd：{[(w['hwnd'],w['title']) for w in matches]}")
+    if matches:
+        return matches[0]
     return _process_fallback(kw)
 
 
@@ -295,13 +297,25 @@ def window_from_hwnd(hwnd) -> Optional[dict]:
             return None
         iconic = bool(win32gui.IsIconic(hwnd))
         rect = None if iconic else tuple(win32gui.GetWindowRect(hwnd))
+        client = win32gui.GetClientRect(hwnd)
+        cl,ct=win32gui.ClientToScreen(hwnd,(client[0],client[1]))
+        cr,cb=win32gui.ClientToScreen(hwnd,(client[2],client[3]))
         return {
             "hwnd": hwnd,
             "title": (win32gui.GetWindowText(hwnd) or "").strip(),
             "rect": rect,
             "class_name": win32gui.GetClassName(hwnd) or "",
             "iconic": iconic,
+            "client_rect": None if iconic else (cl,ct,cr,cb),
         }
+    except Exception:
+        return None
+
+
+def window_pid(hwnd) -> Optional[int]:
+    import win32process
+    try:
+        return int(win32process.GetWindowThreadProcessId(int(hwnd))[1])
     except Exception:
         return None
 
@@ -386,6 +400,62 @@ def cursor_pos() -> tuple[int, int]:
     import win32api
 
     return tuple(win32api.GetCursorPos())
+
+
+def same_window_family(target_hwnd: int, other_hwnd: int) -> bool:
+    """Include child controls, owned dialogs and popup menus, never unrelated apps."""
+    import win32gui
+    def owner_root(hwnd):
+        seen = set()
+        while hwnd and hwnd not in seen:
+            seen.add(hwnd)
+            root = win32gui.GetAncestor(hwnd, 2) or hwnd  # GA_ROOT
+            owner = win32gui.GetWindow(root, 4)  # GW_OWNER
+            if not owner:
+                return root
+            hwnd = owner
+        return hwnd
+    try:
+        return bool(target_hwnd and other_hwnd and owner_root(int(target_hwnd)) == owner_root(int(other_hwnd)))
+    except Exception:
+        return False
+
+
+def validate_input_target(win, points) -> None:
+    """Fail closed if focus or a physical input location belongs to another app.
+
+    Called on the input worker immediately before dispatch. Full-screen operation
+    is allowed only when the caller explicitly resolved a screen context.
+    """
+    import win32gui
+    from ..rw import RwError
+    if win is not None:
+        fresh = window_from_hwnd(win["hwnd"])
+        if fresh is None:
+            raise RwError("stale：目标窗口已关闭，未派发输入")
+        foreground = win32gui.GetForegroundWindow()
+        if not same_window_family(fresh["hwnd"], foreground):
+            raise RwError("目标窗口失去焦点，未派发输入；请重新 look")
+        if points and tuple(fresh["rect"]) != tuple(win["rect"]):
+            raise RwError("stale：窗口位置或大小已改变，请重新 look 后使用新坐标")
+        if points:
+            from . import scene
+            shot = scene.current_image()
+            if shot is not None and scene.current_hwnd() == fresh["hwnd"]:
+                ox,oy = scene.current_origin()
+                observed = (ox,oy,ox+shot.width,oy+shot.height)
+                if observed != tuple(fresh["rect"]):
+                    raise RwError("stale：窗口相对截图已移动或缩放，请重新 look")
+    bounds = screen_bounds()
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise RwError("路径点必须是 [x,y]")
+        x, y = int(point[0]), int(point[1])
+        if not bounds[0] <= x < bounds[2] or not bounds[1] <= y < bounds[3]:
+            raise RwError(f"坐标 ({x},{y}) 在虚拟屏幕之外，未派发输入")
+        hit = win32gui.WindowFromPoint((x, y))
+        if win is not None and not same_window_family(win["hwnd"], hit):
+            raise RwError(f"坐标 ({x},{y}) 不属于目标窗口或其对话框，未派发输入；请重新 look")
 
 
 def coord_space_info(size: tuple[int, int]) -> dict:

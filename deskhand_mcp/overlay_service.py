@@ -15,7 +15,7 @@ import win32pipe
 
 from .engine.overlay import AgentOverlay
 
-PIPE_NAME = r"\\.\pipe\deskhand_agent_overlay"
+PIPE_NAME = os.environ.get("DESKHAND_OVERLAY_PIPE", r"\\.\pipe\deskhand_agent_overlay")
 IDLE_SECONDS = float(os.environ.get("DESKHAND_OVERLAY_IDLE_SECONDS", "0"))
 
 
@@ -34,7 +34,7 @@ class OverlayService:
         )
 
     def _begin(self, message: dict) -> dict:
-        if self.user_paused:
+        if self.user_paused or self.controller.is_paused():
             return {"ok": False, "paused": True, "error": "用户已按 Esc 暂停"}
         self.active = True
         self.last_activity = time.monotonic()
@@ -120,7 +120,8 @@ class OverlayService:
             except Exception as exc:
                 logger.warning("覆盖层服务写入失败: %s", exc)
             finally:
-                self._reset_client()
+                if not self.stopping:
+                    self._reset_client()
         self.controller.close()
         try:
             win32file.CloseHandle(self.pipe)

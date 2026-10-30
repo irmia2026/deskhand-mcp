@@ -647,7 +647,7 @@ def _signature(controls: list[dict]) -> frozenset:
 
 # ── 感知：元素卡片 ──────────────────────────────────────────────
 
-def list_elements(hwnd: int, win_rect=None, limit: int = 18,
+def list_elements(hwnd: int, win_rect=None, limit: Optional[int] = 18,
                   stats: Optional[dict] = None) -> list[dict]:
     """遍历窗口 UIA 树，返回元素卡片用的 element 列表（屏幕坐标，source="uia"）。
 
@@ -772,7 +772,9 @@ def list_elements(hwnd: int, win_rect=None, limit: int = 18,
         # 慢空树：缓存下来避免后续 look 白等（最小化窗口不入缓存，见函数内注释）
         _empty_cache[ckey] = time.monotonic()
         logger.debug("UIA 慢空树（%.2fs）已缓存 %s", cost, ckey[1] or ckey[0])
-    return elements[:limit]
+    # Collection and presentation budgets are distinct. look registers the full
+    # candidate set; only scene.page truncates the model-visible page.
+    return elements if limit is None else elements[:limit]
 
 # ── 执行：后台动作 ──────────────────────────────────────────────
 

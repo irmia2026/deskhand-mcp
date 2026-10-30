@@ -12,6 +12,7 @@ PRIMARY = (43, 84, 229)  # irmia.me CSS #2b54e5
 PRIMARY_LIGHT = (112, 148, 255)
 
 _LABELS = {
+    "find_element": "查找目标", "inspect_region": "放大区域",
     "look": "观察界面", "scene_grid": "分析画面", "click": "点击",
     "verify_point": "确认落点", "type_text": "输入文本", "read_value": "读取控件",
     "read_document": "读取文档", "append_text": "追加文本", "set_value": "覆盖文本",
@@ -21,6 +22,7 @@ _LABELS = {
     "element_action": "原生控件动作", "agent_control": "Agent 状态",
 }
 _LABELS_EN = {
+    "find_element": "Find target", "inspect_region": "Zoom region",
     "look": "Observe", "scene_grid": "Analyze", "click": "Click",
     "verify_point": "Verify point", "type_text": "Type", "read_value": "Read control",
     "read_document": "Read document", "append_text": "Append", "set_value": "Overwrite",

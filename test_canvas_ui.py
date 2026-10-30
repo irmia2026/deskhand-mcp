@@ -4,7 +4,6 @@ import asyncio
 import os
 import sys
 import threading
-import time
 import traceback
 import tkinter as tk
 
@@ -95,7 +94,8 @@ def update_icon_coordinates(hwnd: int) -> None:
 
 async def run_tests() -> None:
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "deskhand_mcp.server"], cwd=ROOT)
+        command=sys.executable, args=["-m", "deskhand_mcp.server"], cwd=ROOT,
+        env=dict(os.environ))
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -139,8 +139,21 @@ async def run_tests() -> None:
             grid_view, image = await call(session, "look", {"hwnd": text_hwnd, "view": "grid"})
             if image:
                 save_img(image, "canvas_look_grid.png")
-            check("look 网格视图提供坐标映射", grid_view.get("view") == "grid"
-                  and len(grid_view.get("grid", {}).get("cell_centers") or {}) == 9)
+            grid_info = grid_view.get("grid") or {}
+            mapping = grid_view.get("image_mapping") or {}
+            check("look 网格视图直读图内坐标", grid_view.get("view") == "grid"
+                  and grid_info.get("kind") == "image_coordinates"
+                  and grid_info.get("coordinate_space") == "image_pixels"
+                  and grid_info.get("image_size") == grid_view.get("image_size")
+                  and grid_info.get("spacing_px", 0) > 0)
+            gw, gh = grid_info.get("image_size", [1, 1])
+            gl, gt, gr, gb = grid_info.get("screen_rect", [0, 0, 0, 0])
+            check("网格刻度保留精确屏幕映射", bool(grid_view.get("image_id"))
+                  and grid_info.get("screen_rect") == mapping.get("screen_rect")
+                  and all(line["screen_x"] == gl + int(line["image_x"] * (gr - gl) / gw)
+                          for line in grid_info.get("x_lines") or [])
+                  and all(line["screen_y"] == gt + int(line["image_y"] * (gb - gt) / gh)
+                          for line in grid_info.get("y_lines") or []))
             default_look, _ = await call(session, "look", {})
             check("look 默认绑定前台窗口", default_look.get("target", {}).get("hwnd") == text_hwnd,
                   str(default_look.get("target")))
@@ -149,7 +162,9 @@ async def run_tests() -> None:
             data, image = await call(session, "look", {"hwnd": icon_hwnd})
             if image:
                 save_img(image, "canvas_icons_look.png")
-            client_top = STATE["icons"]["canvas"].winfo_rooty()
+            # Tk rooty is DPI-virtualized in the fixture process. The server's
+            # physical client boundary is the coordinate system of its elements.
+            client_top = data["client_rect"][1]
             ocr_content = [e for e in data.get("elements") or []
                            if e.get("source") == "ocr" and e.get("type") == "text"
                            and e.get("y", 0) >= client_top
@@ -175,10 +190,32 @@ async def run_tests() -> None:
             check("无文字图标点击真实命中", "circle" in STATE["events"],
                   f"result={result} events={STATE['events']}")
 
+            # A weak-vision host can select by supplied attributes; no visual
+            # coordinate estimate or fixture coordinates are used for input.
+            found, atlas = await call(session, "find_element", {
+                "shape": "circle", "color": "cyan", "source": "cv"})
+            check("颜色形状定位唯一无文字图标", found.get("total") == 1, str(found))
+            if atlas:
+                save_img(atlas, "grounding_candidates.png")
+            candidate = found["candidates"][0]
+            detail, image = await call(session, "inspect_region", {"element": candidate["id"], "zoom": 3})
+            if image:
+                save_img(image, "grounding_detail.png")
+            check("局部放大附精确映射", bool(detail.get("image_id")) and bool(detail.get("focus_point")))
+            STATE["events"].clear()
+            point = detail["focus_point"]
+            mapped, _ = await call(session, "click", {"image_id": detail["image_id"],
+                                                       "x": round(point["image_x"]), "y": round(point["image_y"])})
+            check("放大图坐标点击真实命中", mapped.get("ok") is True and "circle" in STATE["events"], str(mapped))
+            nested, _ = await call(session, "inspect_region", {"image_id": detail["image_id"], "cell": "B2"})
+            check("递归放大保持正确屏幕范围", nested.get("screen_rect", [0,0,0,0])[0] > detail["screen_rect"][0])
+
             grid, image = await call(session, "scene_grid", {"hwnd": icon_hwnd})
             if image:
                 save_img(image, "canvas_icons_grid.png")
             check("无文字 UI 提供 3x3 视觉网格", len(grid.get("grid", {}).get("cell_centers") or {}) == 9)
+            stale, _ = await call(session,"click",{"image_id":detail["image_id"],"x":10,"y":10})
+            check("新快照拒绝旧图像坐标", stale.get("ok") is False and stale.get("stale") is True)
             point, image = await call(session, "verify_point", {"x": circle_x, "y": circle_y,
                                                                  "window": ICON_TITLE})
             if image:
@@ -214,6 +251,7 @@ async def run_tests() -> None:
             final_x = int(drag_events[-1].split(":")[1]) if drag_events else first_x
             check("无文字滑块拖拽真实生效", final_x - first_x >= 150,
                   f"result={dragged} delta={final_x - first_x} events={STATE['events'][-8:]}")
+            await call(session, "agent_control", {"action": "exit"})
 
 
 def main() -> int:

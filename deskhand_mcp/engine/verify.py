@@ -22,7 +22,8 @@ def diff_images(img_before, img_after, threshold: int = _DIFF_THRESHOLD) -> dict
     if img_before.size != img_after.size:
         return {"changed": True, "percent": None, "bbox": None, "size_changed": True}
 
-    diff = ImageChops.difference(img_before.convert("L"), img_after.convert("L"))
+    channels = ImageChops.difference(img_before.convert("RGB"), img_after.convert("RGB")).split()
+    diff = ImageChops.lighter(ImageChops.lighter(channels[0], channels[1]), channels[2])
     # 阈值化：<= threshold 归零，其余拉到 255
     bw = diff.point(lambda p: 255 if p > threshold else 0)
     bbox = bw.getbbox()

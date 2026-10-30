@@ -42,7 +42,7 @@ deskhand-mcp                     # stdio server
 
 暂停后，Agent 只能查询 `agent_control(action="status")`。只有用户在对话中明确允许后，才能调用 `agent_control(action="resume")` 恢复；`agent_control(action="exit")` 是正式退出动作。
 
-## 工具一览（21 个）
+## 工具一览（23 个）
 
 ### 应用与窗口
 
@@ -54,20 +54,23 @@ deskhand-mcp                     # stdio server
 ### 看界面
 
 - `look(window= | hwnd=)` — 默认绑定并聚焦目标窗口，只有 `scope="screen"` 才观察全屏；
-- `look(view="annotated" | "raw" | "grid")` — 分别返回候选标注图、未标注原图或 3×3 网格图；
+- `look(view="annotated" | "raw" | "grid")` — 分别返回候选标注图、未标注原图或带图内像素刻度的自适应坐标网格；网格数字可直接配合 `image_id` 点击；
 - `look(limit=40, cursor=...)` — 同一代快照内分页，元素编号和截图保持稳定；
 - `look(source="uia" | "ocr" | "cv", kind="actions" | "text")` — 按通道或用途过滤；
+- `find_element(query="保存", control_type="button", image=false)` — 搜索完整快照，优先精确匹配，返回可直接调用的 `click_args`；重复候选不擅自选择；
+- `find_element(color="绿色", shape="圆形", position="B2")` — 通过基础颜色、形状和九宫格缩小无文字控件范围，并返回候选局部图集；
+- `inspect_region(element="e1_8", zoom=3)` — 返回放大图与 `image_id`；也可按 `cell="B2"` 或图内 `region=[x,y,w,h]` 放大，支持递归；
 - `scene_grid(window="")` — 独立的 3×3 网格图及屏幕坐标映射；
 - `verify_point(x, y)` — 返回带十字准星的 320px 局部图，由主模型确认落点。
 
 ### 操作
 
-- `click(element= | target= | x,y)` — 元素/文字/坐标点击，支持左中右键和 1–3 击；
+- `click(element= | target= | x,y)` — 元素/文字/坐标点击，支持左中右键和 1–3 击；带 `image_id` 时 x,y 是对应图片内的像素坐标，自动换算屏幕坐标；
 - `element_action(element, action)` — 显式 invoke/toggle/expand/collapse/select/scroll_into_view；
-- `type_text(text, element=)` — UIA 输入控件优先安全追加，否则聚焦后真实输入；
+- `type_text(text, element=, mode="insert")` — 默认真实输入到光标/选区，不自动追加换行；`mode="append"` 或 `append_text` 才是后台追加；
 - `press_key(keys)` / `scroll(...)` — 组合键与滚动；
 - `drag(x1,y1,x2,y2)` — 直线拖拽；
-- `drag_path(points)` — 2–1024 点的连续路径拖拽，支持有限幅的时序配置；
+- `drag_path(points, image_id="")` — 2–1024 点连续拖拽，可使用放大图内坐标；小笔画在路径局部区域验证，避免被全屏阈值漏报；
 - `wait_change(region=, timeout=)` — 异步像素轮询，不阻塞其他 Deskhand 工具。
 
 ### 精确读写
@@ -84,7 +87,7 @@ deskhand-mcp                     # stdio server
 
 ## 窗口与焦点策略
 
-`look` 会绑定任务窗口，后续点击、读写、滚动和按键默认沿用该窗口，不需要重复传标题。`focus` 统一支持：
+`look` 会绑定任务窗口，后续观察、点击、读写、滚动和按键默认沿用该窗口，不需要重复传标题。无绑定或绑定失效时拒绝输入，必须重新 `look`。只有显式 `window="screen"` 或有效全屏观察上下文才允许全屏输入。`focus` 统一支持：
 
 - `auto`：观察或真实键鼠操作前置前，UIA 后台读写不抢焦点；
 - `always`：即使后台动作也先置前；
@@ -95,6 +98,23 @@ list_windows → look(hwnd=...) → 使用最新元素编号 → 需要时用 ne
 ```
 
 OCR 与 CV 会按视觉行和包含关系去重：整段文字保留为一个语义元素，自绘控件保留 CV 可点击区域并合并 OCR 文字。
+
+### 弱视觉模型推荐流程
+
+1. `list_windows`，选择唯一 hwnd；`look(hwnd=..., source="uia", image=false)`。
+2. `find_element(query="保存", control_type="button", image=false)`，从候选中选择；直接使用返回的 `click_args`，无需猜坐标。
+3. UIA 不足时，再 `look(hwnd=..., source="all")` 启用 OCR/CV；可按颜色、形状、位置筛选并查看候选图集。
+4. 看不清时 `inspect_region(element=...)` 或 `inspect_region(cell="B2")`，然后携带返回的 `image_id` 点击。可连续九宫格放大，工具处理负屏幕原点、缩放和像素换算。
+
+`look` 默认将返回图片最长边限制为 1280px（`max_image_size=512..2048`），避免宿主再次大幅缩图；`image_size` 是实际返回图片尺寸，`size` 仍是原始物理截图尺寸。模型应使用 `image_id` 与图片内坐标，不要把二者混用或自行乘 DPI。重新 look 后，旧图片编号失效。
+
+`look(view="grid")` 的四边数字就是当前返回图片的图内像素坐标。模型直接读出目标中心 `(x,y)` 后，调用 `click(image_id=本次返回的编号, x=x, y=y)` 即可；`grid.x_lines/y_lines` 同时保留对应屏幕坐标。独立 `scene_grid` 仍提供 A1–C3 九宫格粗定位，两者用途不同。
+
+颜色/形状只描述基本几何属性，不能凭此把未知图标识别为“保存”“导出”等语义。控件名称、OCR 和局部图提供不同证据；没有可靠匹配时返回候选或失败，不生成虚假的精确坐标。当前验证覆盖了不使用截图估坐标的文字、颜色和形状定位，但尚未对外部弱视觉模型做成功率评测。
+
+**行为变更：**旧版 `type_text(element=...)` 会尝试后台追加。现在默认 `insert`，要保留旧语义请使用 `mode="append"` 或 `append_text`。
+
+DeepSeek 等宿主的接入与评测约定见 [文本优先操作指南](docs/TEXT_FIRST.md)。纯文本宿主可设置 `DESKHAND_IMAGE_OUTPUT=off`，只返回结构化定位结果，不发送图片内容。
 
 ## MCP host 配置
 
@@ -140,6 +160,8 @@ OCR 与 CV 会按视觉行和包含关系去重：整段文字保留为一个语
 
 ```bash
 python -m unittest test_units.py -v
+python -m unittest test_grounding.py -v
+python test_desktop_workflows.py
 python test_client.py
 python test_more.py
 python test_capabilities.py
@@ -151,6 +173,10 @@ python -m pip wheel . --no-deps --wheel-dir test_artifacts/wheel
 ```
 
 GUI 测试会真实操作隔离的记事本测试标签，并验证读回、选区、窗口矩形、记忆命中和覆盖层行为。`test_canvas_ui.py` 还会验证像素文字自绘 UI 与完全无文字 UI 的 OCR/CV、分页、网格、点击、拖拽和等待变化。请勿把其他应用中的未保存内容当作测试目标。
+
+`test_desktop_workflows.py` 创建独立原生 Win32 窗口，验证中文/emoji、选区替换、明确追加、重复控件、跨窗口误输入拦截、坐标归属和窗口移动后的恢复，不操作已有记事本。GUI 测试必须串行运行，避免多个测试争抢桌面。
+
+集成测试可设置 `DESKHAND_OVERLAY_PIPE` 为独立命名管道，`DESKHAND_DATA_DIR` 为临时目录，从而不复用日常任务的覆盖层与元素记忆。
 
 ## 协议
 
