@@ -539,7 +539,7 @@ def _merge_cv_boxes(target: list[dict], boxes: list[dict],
 # ── 应用与窗口 ──────────────────────────────────────────────────
 
 async def agent_control(action: str = "status") -> dict:
-    """查看 Agent 覆盖层状态；仅在用户明确允许后用 resume 恢复 Esc 暂停。"""
+    """查看/恢复/退出 Agent 覆盖层；resume 和 exit 需要用户明确允许。"""
     from .engine import overlay
 
     controller = overlay.get_overlay()
@@ -548,7 +548,10 @@ async def agent_control(action: str = "status") -> dict:
     if action == "resume":
         controller.resume()
         return {**controller.status(), "resumed": True}
-    return {"ok": False, "error": "action 必须是 status 或 resume"}
+    if action == "exit":
+        result = controller.shutdown()
+        return {**result, "exited": True, "visible": False}
+    return {"ok": False, "error": "action 必须是 status/resume/exit"}
 
 
 async def list_windows() -> dict:

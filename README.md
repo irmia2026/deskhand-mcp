@@ -2,7 +2,7 @@
 
 Windows 桌面操控 MCP server，采用 **host-as-VL 架构**：本地完成 UIA、OCR、CV、像素比较和精确读写；标注图通过 MCP ImageContent 返回主模型，不需要额外视觉模型。
 
-当前版本 **0.3.0**，主要能力：
+当前版本 **0.3.1**，主要能力：
 
 - UIA 控件树 + OCR 文字 + CV 候选框，生成编号元素卡片和标注图；
 - ValuePattern/TextPattern 精确读写，默认安全追加并逐字回读；
@@ -36,9 +36,11 @@ deskhand-mcp                     # stdio server
 - 覆盖层通过 `WDA_EXCLUDEFROMCAPTURE` 排除在截图之外；不支持时会在取图瞬间隐藏，避免污染 OCR、CV 和像素 diff；
 - 支持多显示器虚拟屏和负坐标。
 
+覆盖层由独立常驻服务维持，MCP 进程断开或重连不会让它闪退。只有 `agent_control(action="exit")` 或用户 **物理 Esc** 才结束显示；不采用空闲超时自动隐藏。
+
 **物理 Esc** 会隐藏覆盖层并暂停后续工具。Agent 自己调用 `press_key(["esc"])` 属于 injected 输入，不会误触发暂停。已经开始的不可中断系统调用不会强杀，但长输入和路径拖拽会在安全检查点停止。
 
-暂停后，Agent 只能查询 `agent_control(action="status")`。只有用户在对话中明确允许后，才能调用 `agent_control(action="resume")` 恢复。
+暂停后，Agent 只能查询 `agent_control(action="status")`。只有用户在对话中明确允许后，才能调用 `agent_control(action="resume")` 恢复；`agent_control(action="exit")` 是正式退出动作。
 
 ## 工具一览（21 个）
 
@@ -78,7 +80,7 @@ deskhand-mcp                     # stdio server
 
 ### 状态
 
-- `agent_control(action="status" | "resume")` — 查询覆盖层/暂停状态，或经用户明确允许后恢复。
+- `agent_control(action="status" | "resume" | "exit")` — 查询状态、恢复或正式退出覆盖层。
 
 ## 窗口与焦点策略
 
@@ -144,6 +146,7 @@ python test_capabilities.py
 python test_input_safety.py
 python test_canvas_ui.py
 python test_overlay.py
+python test_overlay_service.py
 python -m pip wheel . --no-deps --wheel-dir test_artifacts/wheel
 ```
 

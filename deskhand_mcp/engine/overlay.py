@@ -491,12 +491,16 @@ class AgentOverlay:
             self._thread.join(3)
 
 
-_instance = AgentOverlay()
+_instance = None
 
 
-def get_overlay() -> AgentOverlay:
+def get_overlay():
+    global _instance
+    if _instance is None:
+        from ..overlay_client import OverlayClient
+        _instance = OverlayClient()
     return _instance
 
 
 def capture_guard():
-    return _instance.capture_guard()
+    return get_overlay().capture_guard()
