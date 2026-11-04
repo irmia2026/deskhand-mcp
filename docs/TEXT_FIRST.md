@@ -11,7 +11,7 @@
 5. 设置输入框内容用 `set_value(text=..., element=..., confirm_overwrite=true)` 并检查 `verified`；追加文档用 `append_text`；在光标或选区输入用 `type_text`。
 6. 自绘软件没有控件树时，用 `look(source="all")` 开启 OCR/CV。文字卡片也会报告无文字候选的基础颜色、形状。可用 `find_element(color="青色", shape="圆形", position="B2")` 缩小范围。
 7. 看不清时用 `inspect_region(element=..., zoom=3)`，或 `inspect_region(cell="B2")`。对得到的局部图仍看不清，可以携带它的 `image_id` 再选择九宫格放大。
-8. 图片内坐标必须带 `image_id`，以实际返回 PNG 的 `image_size` 为准，由工具换算为屏幕坐标，不要自行乘 DPI。宿主二次缩图后的显示坐标须先按比例还原；不得混用物理 `size` 或 `screen_x/screen_y`。也可以使用放大图返回的 `focus_point.image_x/image_y`；调用时取最近整数。坐标点击 `ok/dispatched` 不代表命中，仍需验证界面结果。
+8. `look(view="grid")` 默认使用固定 0–1000 逻辑坐标，读到多少就原样搭配 `image_id` 传入，无需考虑宿主缩图、`image_size` 或 DPI。`raw`、`annotated` 和 `inspect_region` 图片仍使用实际返回 PNG 的像素坐标；放大图可使用 `focus_point.image_x/image_y` 并取最近整数。旧像素网格可用 `grid_coordinates="image"`。坐标点击 `ok/dispatched` 不代表命中，仍需验证界面结果。
 9. 圆弧、手写和连续选择用 `drag_path`，整条路径只按下、松开一次鼠标。路径也支持 `image_id`。
 10. 窗口移动、布局改变后重新观察；遇到 `stale`、失去焦点、暂停或目标歧义时，先解决状态，不盲目重复点击。
 11. **完成全部电脑操作后，必须调用 `agent_control(action="exit")` 结束操控并关闭覆盖层。** 不要只回复任务完成，也不要依赖结束对话或断开 MCP；完成任务后的退出不需要额外确认。每次工具返回的 `agent_exit_hint` 也会提醒这一步。

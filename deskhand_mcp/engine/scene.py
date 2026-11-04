@@ -101,20 +101,24 @@ def elements() -> list[dict]:
     return [] if _expired() else [dict(el) for el in _snapshot["elements"]]
 
 
-def register_view(screen_rect, image_size) -> dict:
+def register_view(screen_rect, image_size, coordinate_space="image_pixels") -> dict:
     """Record an exact affine mapping, independent of display DPI and model resizing."""
     global _view_seq
     if _expired():
         raise ValueError("快照已过期，请重新 look")
+    if coordinate_space not in ("image_pixels", "normalized_0_1000"):
+        raise ValueError("未知图片坐标空间")
     _view_seq += 1
     image_id = f"g{current_generation()}v{_view_seq}"
     rect = [int(v) for v in screen_rect]
     width, height = (int(v) for v in image_size)
     if width <= 0 or height <= 0 or rect[2] <= rect[0] or rect[3] <= rect[1]:
         raise ValueError("无效图像范围")
+    scale_x = (rect[2]-rect[0]) / (1000 if coordinate_space == "normalized_0_1000" else width)
+    scale_y = (rect[3]-rect[1]) / (1000 if coordinate_space == "normalized_0_1000" else height)
     mapping = {"image_id": image_id, "image_size": [width, height],
-               "screen_rect": rect, "coordinate_space": "image_pixels",
-               "scale_to_screen": [(rect[2]-rect[0])/width, (rect[3]-rect[1])/height],
+               "screen_rect": rect, "coordinate_space": coordinate_space,
+               "scale_to_screen": [scale_x, scale_y],
                "origin_screen": rect[:2], "generation": current_generation()}
     _views[image_id] = mapping
     if len(_views) > 64:
@@ -131,10 +135,14 @@ def view(image_id: str) -> dict:
 def image_point(image_id: str, x: float, y: float) -> tuple[int, int]:
     import math
     mapping = view(image_id)
+    l,t,r,b = mapping["screen_rect"]
+    if mapping.get("coordinate_space") == "normalized_0_1000":
+        if not math.isfinite(x) or not math.isfinite(y) or not 0 <= x <= 1000 or not 0 <= y <= 1000:
+            raise ValueError("网格逻辑坐标越界；请使用 0–1000")
+        return min(r-1, int(l+x*(r-l)/1000)), min(b-1, int(t+y*(b-t)/1000))
     width, height = mapping["image_size"]
     if not math.isfinite(x) or not math.isfinite(y) or not 0 <= x < width or not 0 <= y < height:
         raise ValueError("图内坐标越界；请使用返回的 image_size 像素坐标")
-    l,t,r,b = mapping["screen_rect"]
     return min(r-1, int(l+x*(r-l)/width)), min(b-1, int(t+y*(b-t)/height))
 
 

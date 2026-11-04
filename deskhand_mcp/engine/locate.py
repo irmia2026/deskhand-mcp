@@ -60,30 +60,52 @@ def _draw_grid(img, cols: int = 3, rows: int = 3):
     return out, cells
 
 
-def draw_coordinate_grid(img, screen_rect=None, spacing=None):
-    """Draw readable image-pixel rulers and retain the exact screen-coordinate mapping."""
+def draw_coordinate_grid(img, screen_rect=None, spacing=None, coordinates="normalized"):
+    """Draw fixed logical or image-pixel rulers with an exact screen mapping."""
     from PIL import Image, ImageDraw, ImageFont
 
+    if coordinates not in ("normalized", "image"):
+        raise ValueError("coordinates 必须是 normalized/image")
     w, h = img.size
     if w <= 0 or h <= 0:
         raise ValueError("截图尺寸必须为正数")
     rect = (0, 0, w, h) if screen_rect is None else tuple(int(v) for v in screen_rect)
     if len(rect) != 4 or rect[2] <= rect[0] or rect[3] <= rect[1]:
         raise ValueError("无效屏幕范围")
+    left, top, right, bottom = rect
+    normalized = coordinates == "normalized"
     if spacing is None:
-        target = max(w, h) / 14
-        spacing = next((v for v in (50, 100, 200, 250, 500, 1000, 2000)
-                        if v >= target), 2000)
+        if normalized:
+            spacing = 100
+        else:
+            target = max(w, h) / 14
+            spacing = next((v for v in (50, 100, 200, 250, 500, 1000, 2000)
+                            if v >= target), 2000)
     step = int(spacing)
     if step <= 0:
         raise ValueError("网格间距必须为正数")
-    left, top, right, bottom = rect
-    x_lines = [{"image_x": x,
-                "screen_x": left + int(x * (right - left) / w)}
-               for x in range(0, w, step)]
-    y_lines = [{"image_y": y,
-                "screen_y": top + int(y * (bottom - top) / h)}
-               for y in range(0, h, step)]
+    if normalized:
+        x_values = list(range(0, 1000, step))
+        y_values = list(range(0, 1000, step))
+        if x_values[-1] != 1000:
+            x_values.append(1000)
+        if y_values[-1] != 1000:
+            y_values.append(1000)
+        x_lines = [{"value": value, "image_x": min(w - 1, int(value * w / 1000)),
+                    "screen_x": min(right - 1, left + int(value * (right - left) / 1000))}
+                   for value in x_values]
+        y_lines = [{"value": value, "image_y": min(h - 1, int(value * h / 1000)),
+                    "screen_y": min(bottom - 1, top + int(value * (bottom - top) / 1000))}
+                   for value in y_values]
+        spacing_px = round(w * step / 1000)
+    else:
+        x_lines = [{"value": x, "image_x": x,
+                    "screen_x": left + int(x * (right - left) / w)}
+                   for x in range(0, w, step)]
+        y_lines = [{"value": y, "image_y": y,
+                    "screen_y": top + int(y * (bottom - top) / h)}
+                   for y in range(0, h, step)]
+        spacing_px = step
 
     base = img.convert("RGBA")
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
@@ -121,13 +143,13 @@ def draw_coordinate_grid(img, screen_rect=None, spacing=None):
         return True
 
     for line in x_lines:
-        text = str(line["image_x"])
+        text = str(line["value"])
         tw = draw.textbbox((0, 0), text, font=font, anchor="lt")[2]
         x = line["image_x"] + 5 if line["image_x"] + tw + 10 < w else line["image_x"] - tw - 5
         label(text, x, 4)
         label(text, x, h - label_height - 2)
     for line in y_lines:
-        text = str(line["image_y"])
+        text = str(line["value"])
         th = draw.textbbox((0, 0), text, font=font, anchor="lt")[3]
         y = min(max(line["image_y"] + 5, label_height + 8), h - label_height - th - 4)
         label(text, 4, y)
@@ -137,11 +159,15 @@ def draw_coordinate_grid(img, screen_rect=None, spacing=None):
     if img.mode != "RGBA":
         out = out.convert("RGB")
     metadata = {
-        "kind": "image_coordinates", "coordinate_space": "image_pixels",
+        "kind": "normalized_coordinates" if normalized else "image_coordinates",
+        "coordinate_space": "normalized_0_1000" if normalized else "image_pixels",
         "image_size": [w, h], "origin_screen": [left, top],
-        "screen_rect": [left, top, right, bottom], "spacing_px": step,
-        "x_lines": x_lines, "y_lines": y_lines, "labels": labels,
+        "screen_rect": [left, top, right, bottom], "spacing": step,
+        "spacing_px": spacing_px, "x_lines": x_lines, "y_lines": y_lines,
+        "labels": labels,
     }
+    if normalized:
+        metadata["range"] = [0, 1000]
     return out, metadata
 
 

@@ -157,34 +157,52 @@ class ServerPauseTests(unittest.TestCase):
 
 
 class CoordinateGridTests(unittest.TestCase):
-    def test_grid_labels_are_image_pixels_with_screen_mapping(self):
+    def test_grid_uses_fixed_logical_coordinates(self):
         from PIL import Image
         from deskhand_mcp.engine import locate
 
         source = Image.new("RGB", (640, 360), (20, 30, 40))
         grid, metadata = locate.draw_coordinate_grid(
-            source, screen_rect=(-10, 120, 630, 480), spacing=100)
+            source, screen_rect=(-10, 120, 630, 480))
+        self.assertEqual(grid.size, source.size)
+        self.assertEqual(metadata["kind"], "normalized_coordinates")
+        self.assertEqual(metadata["coordinate_space"], "normalized_0_1000")
+        self.assertEqual(metadata["range"], [0, 1000])
+        self.assertEqual(metadata["image_size"], [640, 360])
+        self.assertEqual(metadata["origin_screen"], [-10, 120])
+        self.assertEqual(metadata["x_lines"][0],
+                         {"value": 0, "image_x": 0, "screen_x": -10})
+        self.assertEqual(metadata["x_lines"][1],
+                         {"value": 100, "image_x": 64, "screen_x": 54})
+        self.assertEqual(metadata["y_lines"][1],
+                         {"value": 100, "image_y": 36, "screen_y": 156})
+        self.assertEqual(metadata["x_lines"][-1],
+                         {"value": 1000, "image_x": 639, "screen_x": 629})
+        self.assertEqual(metadata["y_lines"][-1],
+                         {"value": 1000, "image_y": 359, "screen_y": 479})
+
+    def test_grid_labels_support_legacy_image_pixels(self):
+        from PIL import Image
+        from deskhand_mcp.engine import locate
+
+        source = Image.new("RGB", (640, 360), (20, 30, 40))
+        grid, metadata = locate.draw_coordinate_grid(
+            source, screen_rect=(-10, 120, 630, 480), spacing=100,
+            coordinates="image")
         self.assertEqual(grid.size, source.size)
         self.assertEqual(metadata["kind"], "image_coordinates")
         self.assertEqual(metadata["coordinate_space"], "image_pixels")
-        self.assertEqual(metadata["image_size"], [640, 360])
-        self.assertEqual(metadata["origin_screen"], [-10, 120])
-        self.assertEqual(metadata["x_lines"][0], {"image_x": 0, "screen_x": -10})
-        self.assertEqual(metadata["x_lines"][1], {"image_x": 100, "screen_x": 90})
-        self.assertEqual(metadata["y_lines"][1], {"image_y": 100, "screen_y": 220})
-        for line in metadata["x_lines"]:
-            self.assertEqual(line["screen_x"],
-                             -10 + int(line["image_x"] * 640 / 640))
-        for line in metadata["y_lines"]:
-            self.assertEqual(line["screen_y"],
-                             120 + int(line["image_y"] * 360 / 360))
+        self.assertEqual(metadata["x_lines"][1],
+                         {"value": 100, "image_x": 100, "screen_x": 90})
+        self.assertEqual(metadata["y_lines"][1],
+                         {"value": 100, "image_y": 100, "screen_y": 220})
 
-    def test_grid_adapts_spacing_without_resizing(self):
+    def test_grid_adapts_legacy_spacing_without_resizing(self):
         from PIL import Image
         from deskhand_mcp.engine import locate
 
         source = Image.new("RGBA", (800, 500), (0, 0, 0, 0))
-        grid, metadata = locate.draw_coordinate_grid(source)
+        grid, metadata = locate.draw_coordinate_grid(source, coordinates="image")
         self.assertEqual(grid.size, source.size)
         self.assertEqual(grid.mode, "RGBA")
         self.assertEqual(metadata["spacing_px"], 100)

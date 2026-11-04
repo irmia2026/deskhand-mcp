@@ -142,18 +142,18 @@ async def run_tests() -> None:
                 save_img(image, "canvas_look_grid.png")
             grid_info = grid_view.get("grid") or {}
             mapping = grid_view.get("image_mapping") or {}
-            check("look 网格视图直读图内坐标", grid_view.get("view") == "grid"
-                  and grid_info.get("kind") == "image_coordinates"
-                  and grid_info.get("coordinate_space") == "image_pixels"
+            check("look 网格视图直读固定逻辑坐标", grid_view.get("view") == "grid"
+                  and grid_info.get("kind") == "normalized_coordinates"
+                  and grid_info.get("coordinate_space") == "normalized_0_1000"
+                  and grid_info.get("range") == [0, 1000]
                   and grid_info.get("image_size") == grid_view.get("image_size")
-                  and grid_info.get("spacing_px", 0) > 0)
-            gw, gh = grid_info.get("image_size", [1, 1])
+                  and grid_info.get("spacing") == 100)
             gl, gt, gr, gb = grid_info.get("screen_rect", [0, 0, 0, 0])
             check("网格刻度保留精确屏幕映射", bool(grid_view.get("image_id"))
                   and grid_info.get("screen_rect") == mapping.get("screen_rect")
-                  and all(line["screen_x"] == gl + int(line["image_x"] * (gr - gl) / gw)
+                  and all(line["screen_x"] == min(gr - 1, gl + int(line["value"] * (gr - gl) / 1000))
                           for line in grid_info.get("x_lines") or [])
-                  and all(line["screen_y"] == gt + int(line["image_y"] * (gb - gt) / gh)
+                  and all(line["screen_y"] == min(gb - 1, gt + int(line["value"] * (gb - gt) / 1000))
                           for line in grid_info.get("y_lines") or []))
             default_look, _ = await call(session, "look", {})
             check("look 默认绑定前台窗口", default_look.get("target", {}).get("hwnd") == text_hwnd,
@@ -263,10 +263,9 @@ async def run_tests() -> None:
                 candidate = found["candidates"][0]
                 mapping = grid_view["image_mapping"]
                 left, top, right, bottom = mapping["screen_rect"]
-                width, height = mapping["image_size"]
                 point = (
-                    round((candidate["x"] - left) * width / (right - left)),
-                    round((candidate["y"] - top) * height / (bottom - top)),
+                    round((candidate["x"] - left) * 1000 / (right - left)),
+                    round((candidate["y"] - top) * 1000 / (bottom - top)),
                 )
                 STATE["events"].clear()
                 clicked, _ = await call(session, "click", {
@@ -277,7 +276,7 @@ async def run_tests() -> None:
             grid_view, image, grid_point, grid_click = await click_circle_grid()
             if image:
                 save_img(image, "canvas_icon_grid_click.png")
-            check("512px 坐标网格真实命中圆形", grid_click.get("ok") is True
+            check("512px 缩图直接使用 0–1000 坐标命中", grid_click.get("ok") is True
                   and "circle" in STATE["events"],
                   f"point={grid_point} result={grid_click} events={STATE['events']}")
 

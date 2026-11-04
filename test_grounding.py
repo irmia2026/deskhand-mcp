@@ -156,7 +156,14 @@ class GroundingTests(unittest.TestCase):
         with Image.open(io.BytesIO(result["_image"])) as png:
             self.assertEqual(list(png.size), result["image_size"])
         self.assertEqual(result["grid"]["image_size"], result["image_size"])
-        self.assertIn("二次缩图", result["image_note"])
+        self.assertEqual(result["grid"]["coordinate_space"], "normalized_0_1000")
+        self.assertEqual(result["image_mapping"]["coordinate_space"], "normalized_0_1000")
+        self.assertIn("无需", result["image_note"])
+        self.assertEqual(scene.image_point(result["image_id"], 500, 500), (-50, 500))
+        self.assertEqual(scene.image_point(result["image_id"], 1000, 1000), (399, 799))
+        for value in (-1, 1001):
+            with self.assertRaises(ValueError):
+                scene.image_point(result["image_id"], value, 500)
         labels = result["grid"]["labels"]
         self.assertTrue(labels)
         for i, first in enumerate(labels):
@@ -166,6 +173,13 @@ class GroundingTests(unittest.TestCase):
                     a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3],
                     (first, second),
                 )
+        legacy = tools._present_look_page(
+            {"ok": True}, scene.page(2), scene.current_image(),
+            scene.current_origin(), True, "grid", 512, "image",
+        )
+        self.assertEqual(legacy["image_mapping"]["coordinate_space"], "image_pixels")
+        w, h = legacy["image_size"]
+        self.assertEqual(scene.image_point(legacy["image_id"], w / 2, h / 2), (-50, 500))
 
     def test_image_point_rejects_local_layout_change(self):
         mapping = scene.register_view((-500, 200, 400, 800), (900, 600))
