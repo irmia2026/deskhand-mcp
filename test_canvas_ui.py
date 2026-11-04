@@ -76,6 +76,7 @@ def build_icon_window(root: tk.Tk, parent: tk.Tk) -> None:
     STATE["icons"] = {
         "hwnd": window.winfo_id(), "canvas": canvas, "handle": handle,
         "circle": (430, 190), "slider": (130, 420),
+        "shapes": {"rectangle": rectangle, "circle": circle},
     }
     STATE["icon_window"] = window
 
@@ -251,6 +252,56 @@ async def run_tests() -> None:
             final_x = int(drag_events[-1].split(":")[1]) if drag_events else first_x
             check("无文字滑块拖拽真实生效", final_x - first_x >= 150,
                   f"result={dragged} delta={final_x - first_x} events={STATE['events'][-8:]}")
+
+            async def click_circle_grid():
+                grid_view, image = await call(session, "look", {
+                    "hwnd": icon_hwnd, "view": "grid", "source": "cv",
+                    "max_image_size": 512})
+                found, _ = await call(session, "find_element", {
+                    "shape": "circle", "color": "cyan", "source": "cv",
+                    "image": False})
+                candidate = found["candidates"][0]
+                mapping = grid_view["image_mapping"]
+                left, top, right, bottom = mapping["screen_rect"]
+                width, height = mapping["image_size"]
+                point = (
+                    round((candidate["x"] - left) * width / (right - left)),
+                    round((candidate["y"] - top) * height / (bottom - top)),
+                )
+                STATE["events"].clear()
+                clicked, _ = await call(session, "click", {
+                    "image_id": grid_view["image_id"], "x": point[0], "y": point[1]})
+                await asyncio.sleep(0.3)
+                return grid_view, image, point, clicked
+
+            grid_view, image, grid_point, grid_click = await click_circle_grid()
+            if image:
+                save_img(image, "canvas_icon_grid_click.png")
+            check("512px 坐标网格真实命中圆形", grid_click.get("ok") is True
+                  and "circle" in STATE["events"],
+                  f"point={grid_point} result={grid_click} events={STATE['events']}")
+
+            shapes = STATE["icons"]["shapes"]
+            canvas = STATE["icons"]["canvas"]
+            def swap_shapes():
+                circle_box = canvas.coords(shapes["circle"])
+                rectangle_box = canvas.coords(shapes["rectangle"])
+                canvas.coords(shapes["circle"], rectangle_box)
+                canvas.coords(shapes["rectangle"], circle_box)
+            STATE["icon_window"].after(0, swap_shapes)
+            await asyncio.sleep(0.5)
+            STATE["events"].clear()
+            stale, _ = await call(session, "click", {
+                "image_id": grid_view["image_id"],
+                "x": grid_point[0], "y": grid_point[1]})
+            check("同窗口布局变化拒绝旧图片坐标", stale.get("ok") is False
+                  and stale.get("stale") is True and not STATE["events"],
+                  f"result={stale} events={STATE['events']}")
+
+            fresh_view, _, fresh_point, fresh_click = await click_circle_grid()
+            check("布局变化后重新观察可命中", fresh_click.get("ok") is True
+                  and "circle" in STATE["events"],
+                  f"point={fresh_point} result={fresh_click} events={STATE['events']}")
             await call(session, "agent_control", {"action": "exit"})
 
 

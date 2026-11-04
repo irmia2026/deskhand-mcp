@@ -755,10 +755,10 @@ async def _focus_real_input(win, focus: str):
     return await _apply_focus(win, focus, True)
 
 
-async def _dispatch_real(win, fn, *args, points=None):
-    """Recheck ownership and focus immediately before input on the STA worker."""
+async def _dispatch_real(win, fn, *args, points=None, image_id=""):
+    """Recheck ownership, focus and image freshness immediately before input."""
     def dispatch():
-        desktop.validate_input_target(win, points or [])
+        desktop.validate_input_target(win, points or [], image_id=image_id)
         from .engine import overlay
         if overlay.get_overlay().should_cancel():
             raise inp.InputCancelled("用户已暂停，未派发输入")
@@ -800,7 +800,11 @@ def _present_look_page(base: dict, page: dict, shot, origin: tuple,
         "完成全部电脑操作后必须调用 agent_control(action='exit')，不能只结束对话。")
     if image and shot is not None:
         ox, oy = origin
-        base["coordinate_help"] = "优先 click(element=编号)，无需估坐标；图内坐标请 click(image_id=本图编号,x=图内横坐标,y=图内纵坐标)，不要自行乘 DPI。"
+        base["coordinate_help"] = (
+            "优先 click(element=编号)。图片坐标必须基于实际返回 PNG 的 image_size，"
+            "并搭配本图 image_id；宿主二次缩图后的显示坐标须先按宽度、高度比例还原。"
+            "不要混用物理 size、screen_x/screen_y、归一化坐标或手算 DPI。"
+            "滚动、弹窗或布局变化后必须重新 look。")
         def output(img):
             from PIL import Image
             img.thumbnail((max_image_size,max_image_size),Image.Resampling.LANCZOS)
@@ -819,9 +823,11 @@ def _present_look_page(base: dict, page: dict, shot, origin: tuple,
                 result["image_note"] = "附带未标注原图；识别结果仍在 elements 中，图内坐标需配合 image_id 使用。"
             elif view == "grid":
                 result["image_note"] = (
-                    "附带坐标标尺网格：四边数字均为当前图片的图内像素坐标。"
-                    "读出目标中心的 x,y 后，使用 click(image_id=本图编号,x=x,y=y)；"
-                    "格线间按比例估算；需要更精细时用 inspect_region 放大，不要自行乘 DPI。"
+                    "附带坐标标尺网格：四边数字均为实际返回 PNG 的图内像素坐标，范围以 image_size 为准。"
+                    "读出目标中心的 x,y 后，使用 click(image_id=本图编号,x=x,y=y)。"
+                    "若宿主二次缩图，须先把显示坐标还原到 image_size；不要使用物理 size、"
+                    "screen_x/screen_y 或归一化坐标。格线间按比例估算；小目标用 inspect_region。"
+                    "滚动、弹窗或布局变化后重新 look，不要自行乘 DPI。"
                 )
             return result
         if view == "raw":
@@ -1335,7 +1341,7 @@ async def click(target: str = "", element: str = "",
     before = await desktop.run(desktop.screenshot, bbox)
     input_result = await _dispatch_real(
         win, inp.click, px, py, button, double, count,
-        move_settle_ms, press_ms, after_ms, points=[(px, py)])
+        move_settle_ms, press_ms, after_ms, points=[(px, py)], image_id=image_id)
     diff = await _post_action_diff(before, bbox)
 
     ok = diff["meaningful"] or diff.get("text_changed")
@@ -1350,7 +1356,9 @@ async def click(target: str = "", element: str = "",
         "action": "click",
         "target": target or None,
         "element": element or None,
+        "image_id": image_id or None,
         "x": px, "y": py,
+        "result_note": "ok/dispatched 仅表示点击已派发；effective=null 时不代表命中，请用界面状态或读回验证。",
         "button": button, "double": input_result["double"],
         "count": input_result["count"],
         "locate_source": r["source"],
@@ -1639,7 +1647,9 @@ async def drag(x1: int, y1: int, x2: int, y2: int,
         return {"ok": False, "error": error, "focus_required": True}
     bbox=_stroke_bbox([(x1,y1),(x2,y2)])
     before = await desktop.run(desktop.screenshot, bbox)
-    await _dispatch_real(win, inp.drag, int(x1), int(y1), int(x2), int(y2), points=[(x1,y1),(x2,y2)])
+    await _dispatch_real(
+        win, inp.drag, int(x1), int(y1), int(x2), int(y2),
+        points=[(x1,y1),(x2,y2)], image_id=image_id)
     diff = await _post_action_diff(before, bbox)
     before.close()
     return {"ok": True, "action": "drag", "from": [x1, y1], "to": [x2, y2],
@@ -1672,7 +1682,7 @@ async def drag_path(points: list, press_ms: int = 100, step_ms: int = 20,
 
         result = await _dispatch_real(
             win, inp.drag_path, points, press_ms, step_ms, after_ms,
-            overlay.get_overlay().should_cancel, points=points)
+            overlay.get_overlay().should_cancel, points=points, image_id=image_id)
         diff = await _post_action_diff(before, bbox)
         return {"ok": True, "dispatched": True, "action": "drag_path", **result,
                 "focus_policy": focus, "focus_changed": changed,

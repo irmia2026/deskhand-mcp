@@ -101,15 +101,24 @@ def draw_coordinate_grid(img, screen_rect=None, spacing=None):
                   fill=(43, 84, 229, 96), width=1)
 
     label_height = font_size + 10
+    occupied = []
+    labels = []
 
     def label(text, x, y):
         box = draw.textbbox((0, 0), text, font=font, anchor="lt")
         tw, th = box[2], box[3]
         x = max(2, min(int(x), w - tw - 2))
         y = max(2, min(int(y), h - th - 2))
-        draw.rectangle((x - 3, y - 3, x + tw + 3, y + th + 3),
-                       fill=(8, 15, 30, 220))
+        rect = (x - 3, y - 3, x + tw + 3, y + th + 3)
+        if any(not (rect[2] < other[0] or rect[0] > other[2]
+                    or rect[3] < other[1] or rect[1] > other[3])
+               for other in occupied):
+            return False
+        draw.rectangle(rect, fill=(8, 15, 30, 220))
         draw.text((x, y), text, font=font, fill="white", anchor="lt")
+        occupied.append(rect)
+        labels.append({"text": text, "rect": list(rect)})
+        return True
 
     for line in x_lines:
         text = str(line["image_x"])
@@ -131,7 +140,7 @@ def draw_coordinate_grid(img, screen_rect=None, spacing=None):
         "kind": "image_coordinates", "coordinate_space": "image_pixels",
         "image_size": [w, h], "origin_screen": [left, top],
         "screen_rect": [left, top, right, bottom], "spacing_px": step,
-        "x_lines": x_lines, "y_lines": y_lines,
+        "x_lines": x_lines, "y_lines": y_lines, "labels": labels,
     }
     return out, metadata
 

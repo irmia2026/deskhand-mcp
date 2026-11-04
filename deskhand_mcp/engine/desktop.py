@@ -421,8 +421,46 @@ def same_window_family(target_hwnd: int, other_hwnd: int) -> bool:
         return False
 
 
-def validate_input_target(win, points) -> None:
-    """Fail closed if focus or a physical input location belongs to another app.
+def _validate_image_points(image_id: str, points) -> None:
+    from . import scene, verify
+    from ..rw import RwError
+
+    try:
+        mapping = scene.view(image_id)
+    except ValueError as exc:
+        raise RwError(f"stale：{exc}") from exc
+    shot = scene.current_image()
+    if shot is None:
+        raise RwError("stale：图片所属快照已失效，请重新 look")
+    ox, oy = scene.current_origin()
+    observed = (ox, oy, ox + shot.width, oy + shot.height)
+    left, top, right, bottom = mapping["screen_rect"]
+    if not (observed[0] <= left < right <= observed[2]
+            and observed[1] <= top < bottom <= observed[3]):
+        raise RwError("stale：图片范围不在当前快照内，请重新 look")
+    live = screenshot(observed)
+    try:
+        for point in points:
+            cx, cy = int(point[0]) - ox, int(point[1]) - oy
+            box = (max(0, cx - 16), max(0, cy - 16),
+                   min(shot.width, cx + 16), min(shot.height, cy + 16))
+            if box[2] <= box[0] or box[3] <= box[1]:
+                raise RwError("stale：图片落点不在快照范围内，请重新 look")
+            before = shot.crop(box)
+            after = live.crop(box)
+            try:
+                diff = verify.diff_images(before, after)
+            finally:
+                before.close()
+                after.close()
+            if diff["changed"] and (diff["percent"] is None or diff["percent"] >= 20):
+                raise RwError("stale：图片落点周围的界面已变化，请重新 look 后使用新 image_id")
+    finally:
+        live.close()
+
+
+def validate_input_target(win, points, image_id: str = "") -> None:
+    """Fail closed if focus, ownership or an image-derived location is stale.
 
     Called on the input worker immediately before dispatch. Full-screen operation
     is allowed only when the caller explicitly resolved a screen context.
@@ -456,6 +494,8 @@ def validate_input_target(win, points) -> None:
         hit = win32gui.WindowFromPoint((x, y))
         if win is not None and not same_window_family(win["hwnd"], hit):
             raise RwError(f"坐标 ({x},{y}) 不属于目标窗口或其对话框，未派发输入；请重新 look")
+    if image_id and points:
+        _validate_image_points(image_id, points)
 
 
 def coord_space_info(size: tuple[int, int]) -> dict:

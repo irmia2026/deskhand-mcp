@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from PIL import Image
 
 from deskhand_mcp import rw, server, tools
-from deskhand_mcp.engine import desktop, ocr, overlay, scene, uia, verify
+from deskhand_mcp.engine import desktop, locate, ocr, overlay, scene, uia, verify
 from deskhand_mcp.engine import input as inp
 from deskhand_mcp.overlay_service import OverlayService
 
@@ -147,6 +147,39 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(
             scene.image_point(result["image_id"], w / 2, h / 2), (-50, 500)
         )
+
+    def test_grid_thumbnail_mapping_and_labels(self):
+        result = tools._present_look_page(
+            {"ok": True}, scene.page(2), scene.current_image(),
+            scene.current_origin(), True, "grid", 512,
+        )
+        with Image.open(io.BytesIO(result["_image"])) as png:
+            self.assertEqual(list(png.size), result["image_size"])
+        self.assertEqual(result["grid"]["image_size"], result["image_size"])
+        self.assertIn("二次缩图", result["image_note"])
+        labels = result["grid"]["labels"]
+        self.assertTrue(labels)
+        for i, first in enumerate(labels):
+            for second in labels[i + 1:]:
+                a, b = first["rect"], second["rect"]
+                self.assertTrue(
+                    a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3],
+                    (first, second),
+                )
+
+    def test_image_point_rejects_local_layout_change(self):
+        mapping = scene.register_view((-500, 200, 400, 800), (900, 600))
+        with patch.object(desktop, "screenshot", return_value=self.image.copy()):
+            desktop._validate_image_points(mapping["image_id"], [(-50, 500)])
+        crop = scene.register_view((-300, 400, -100, 600), (200, 200))
+        with patch.object(desktop, "screenshot", return_value=self.image.copy()):
+            desktop._validate_image_points(crop["image_id"], [(-200, 500)])
+        changed = self.image.copy()
+        changed.paste("white", (443, 293, 458, 308))
+        with patch.object(desktop, "screenshot", return_value=changed):
+            with self.assertRaises(rw.RwError) as caught:
+                desktop._validate_image_points(mapping["image_id"], [(-50, 500)])
+        self.assertIn("stale", str(caught.exception))
 
     def test_same_luminance_different_colors_detected(self):
         a = Image.new("RGB", (10, 10), (255, 0, 0))
@@ -322,6 +355,20 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("agent_control(action='exit')", result["agent_exit_hint"])
         self.assertIn("结束对话", result["agent_exit_hint"])
         self.assertIn("完成全部电脑操作后必须调用 exit", tools.agent_control.__doc__)
+
+    async def test_stale_input_error_is_structured(self):
+        controller = MagicMock()
+        controller.is_paused.return_value = False
+        controller.begin.return_value = 1
+
+        async def action():
+            raise rw.RwError("stale：图片落点已变化")
+
+        with patch.object(overlay, "get_overlay", return_value=controller):
+            blocks = await server._wrap(action)()
+        result = json.loads(blocks[0].text)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["stale"])
 
     async def test_text_only_host_never_receives_image_blocks(self):
         controller = MagicMock()

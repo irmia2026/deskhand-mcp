@@ -68,6 +68,8 @@ def _wrap(fn):
                             result = await fn(**kwargs)
             except rw.RwError as e:
                 result = {"ok": False, "error": str(e)}
+                if str(e).startswith("stale"):
+                    result["stale"] = True
             except Exception as e:
                 logger.warning("工具 %s 执行失败: %s", fn.__name__, e)
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -133,10 +135,12 @@ def build_server() -> MCPServer:
             "find_element 搜索完整快照，返回可直接调用的 click_args；多个同名候选时必须选择编号。"
             "无文字图标可按 position=A1..C3、color、shape 筛选并查看候选局部图。"
             "看不清时 inspect_region(element=编号) 或 cell='B2'，可递归放大。"
-            "图内坐标点击必须携带 image_id，坐标自动映射为屏幕物理像素，无需计算 DPI；"
+            "图内坐标点击必须携带 image_id，并基于实际返回 PNG 的 image_size；"
+            "宿主二次缩图后的显示坐标先按比例还原，不得混用物理 size、screen_x/screen_y 或归一化坐标，无需计算 DPI。"
+            "坐标点击 ok/dispatched 不代表命中，effective=null 时必须用界面状态或读回验证。"
             "type_text 默认光标插入，追加用 append_text 或 mode='append'，不要将字段设置误当文档追加。"
             "focus=auto 按需置前，always 强制置前，never 禁止抢焦点；UIA 后台读写优先。"
-            "元素编号带快照代次，界面变化后必须重新 look；旧编号和旧游标不可复用。"
+            "元素编号带快照代次；滚动、弹窗、布局或窗口变化后必须重新 look，旧编号、旧图和旧游标不可复用。"
             "精确读写使用 read_value/read_selection/read_document/append_text/set_value，"
             "选区读取不碰剪贴板，覆盖需 confirm_overwrite=true。"
             "自绘界面用 view='grid' 或 scene_grid，落点不确定用 verify_point。\n"
