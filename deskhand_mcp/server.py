@@ -25,6 +25,42 @@ from .engine import desktop, locate, memory as mem, overlay, wgc
 
 logger = logging.getLogger("deskhand_mcp.server")
 _ACTION_LOCK = asyncio.Lock()
+_STDIO_MESSAGE_BUDGET = 1_000_000
+
+
+def _fit_image_for_stdio(image: bytes, text: str) -> tuple[bytes, str] | None:
+    """Keep the Base64 image and its JSON-RPC response below the host line limit."""
+    text_size = len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
+    base64_budget = _STDIO_MESSAGE_BUDGET - text_size - 1024
+    if base64_budget < 4:
+        return None
+
+    def fits(data: bytes) -> bool:
+        return 4 * ((len(data) + 2) // 3) <= base64_budget
+
+    if fits(image):
+        return image, "image/png"
+
+    import io
+
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(image)) as source:
+            rgb = source.convert("RGB")
+            try:
+                for quality in (85, 70, 50, 30, 15, 5):
+                    buf = io.BytesIO()
+                    rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+                    encoded = buf.getvalue()
+                    if fits(encoded):
+                        return encoded, "image/jpeg"
+            finally:
+                rgb.close()
+    except (OSError, ValueError) as exc:
+        logger.warning("图片压缩失败: %s", exc)
+    return None
+
 
 _DATA_DIR = os.environ.get(
     "DESKHAND_DATA_DIR",
@@ -95,11 +131,20 @@ def _wrap(fn):
         if image and output_images:
             import base64
 
-            blocks.append(mt.ImageContent(
-                type="image",
-                data=base64.b64encode(image).decode("ascii"),
-                mime_type="image/png",
-            ))
+            fitted = _fit_image_for_stdio(image, text)
+            if fitted is None:
+                result["image_omitted"] = (
+                    "图片超出宿主 stdio 单行限制；请降低 max_image_size，"
+                    "或使用元素编号和纯文本定位"
+                )
+                blocks[0].text = json.dumps(result, ensure_ascii=False, default=str)
+            else:
+                encoded, mime_type = fitted
+                blocks.append(mt.ImageContent(
+                    type="image",
+                    data=base64.b64encode(encoded).decode("ascii"),
+                    mime_type=mime_type,
+                ))
         return blocks
 
     return _call
@@ -136,7 +181,7 @@ def build_server() -> MCPServer:
             "find_element 搜索完整快照，返回可直接调用的 click_args；多个同名候选时必须选择编号。"
             "无文字图标可按 position=A1..C3、color、shape 筛选并查看候选局部图。"
             "看不清时 inspect_region(element=编号) 或 cell='B2'，可递归放大。"
-            "raw/annotated/inspect_region 图片仍使用实际 PNG 的 image_size 像素坐标并携带 image_id。"
+            "raw/annotated/inspect_region 图片仍使用实际返回图片的 image_size 像素坐标并携带 image_id。"
             "坐标点击 ok/dispatched 不代表命中，effective=null 时必须用界面状态或读回验证。"
             "type_text 默认光标插入，追加用 append_text 或 mode='append'，不要将字段设置误当文档追加。"
             "focus=auto 按需置前，always 强制置前，never 禁止抢焦点；UIA 后台读写优先。"

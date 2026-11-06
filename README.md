@@ -107,9 +107,9 @@ OCR 与 CV 会按视觉行和包含关系去重：整段文字保留为一个语
 4. 看不清时 `inspect_region(element=...)` 或 `inspect_region(cell="B2")`，然后携带返回的 `image_id` 点击。可连续九宫格放大，工具处理负屏幕原点、缩放和像素换算。
 5. 全部电脑操作完成后，必须调用 `agent_control(action="exit")` 关闭覆盖层；不能只结束对话或断开 MCP。每次工具返回中的 `agent_exit_hint` 会提醒这一步。
 
-`look` 默认将返回图片最长边限制为 1280px（`max_image_size=512..2048`）。`image_size` 是实际返回 PNG 的像素尺寸，`size` 仍是原始物理截图尺寸；仅 `raw`、`annotated`、`inspect_region` 和像素兼容网格需要区分二者。重新 look 后，旧图片编号失效；滚动、弹窗或布局变化后也必须重新 look。
+`look` 默认将返回图片最长边限制为 1280px（`max_image_size=512..2048`）。`image_size` 是实际返回图片的像素尺寸，`size` 仍是原始物理截图尺寸；仅 `raw`、`annotated`、`inspect_region` 和像素兼容网格需要区分二者。为避免宿主因 stdio 单行超过 1MiB 而重启服务，较大的 PNG 会自动转成等尺寸 JPEG；无法安全压缩时省略图片并保留文本结果。重新 look 后，旧图片编号失效；滚动、弹窗或布局变化后也必须重新 look。
 
-`look(view="grid")` 默认返回固定 0–1000 逻辑坐标网格。模型读出目标中心 `(x,y)` 后，原样调用 `click(image_id=本次返回的编号, x=x, y=y)`；宿主二次缩图不影响刻度，不需要读取显示尺寸、使用 `image_size` 或计算 DPI。`grid.x_lines/y_lines` 保留逻辑值、实际 PNG 位置和屏幕坐标供诊断。旧版图片像素网格可用 `grid_coordinates="image"`。独立 `scene_grid` 仍提供 A1–C3 九宫格粗定位，两者用途不同。坐标点击的 `ok/dispatched` 不证明命中，需以后续界面状态或读回验证。
+`look(view="grid")` 默认返回固定 0–1000 逻辑坐标网格。模型读出目标中心 `(x,y)` 后，原样调用 `click(image_id=本次返回的编号, x=x, y=y)`；宿主二次缩图不影响刻度，不需要读取显示尺寸、使用 `image_size` 或计算 DPI。`grid.x_lines/y_lines` 保留逻辑值、实际图片位置和屏幕坐标供诊断。旧版图片像素网格可用 `grid_coordinates="image"`。独立 `scene_grid` 仍提供 A1–C3 九宫格粗定位，两者用途不同。坐标点击的 `ok/dispatched` 不证明命中，需以后续界面状态或读回验证。
 
 颜色/形状只描述基本几何属性，不能凭此把未知图标识别为“保存”“导出”等语义。控件名称、OCR 和局部图提供不同证据；没有可靠匹配时返回候选或失败，不生成虚假的精确坐标。当前验证覆盖了不使用截图估坐标的文字、颜色和形状定位，但尚未对外部弱视觉模型做成功率评测。
 

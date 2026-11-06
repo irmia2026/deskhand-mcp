@@ -809,7 +809,7 @@ def _present_look_page(base: dict, page: dict, shot, origin: tuple,
                 "滚动、弹窗或布局变化后必须重新 look。")
         else:
             base["coordinate_help"] = (
-                "优先 click(element=编号)。此图使用实际返回 PNG 的 image_size 像素坐标，"
+                "优先 click(element=编号)。此图使用实际返回图片 的 image_size 像素坐标，"
                 "并搭配本图 image_id；宿主二次缩图后的显示坐标须先按比例还原。"
                 "不要混用物理 size、screen_x/screen_y 或手算 DPI。"
                 "滚动、弹窗或布局变化后必须重新 look。")
@@ -841,7 +841,7 @@ def _present_look_page(base: dict, page: dict, shot, origin: tuple,
                 )
             elif view == "grid":
                 result["image_note"] = (
-                    "附带兼容的图片像素网格：四边数字以实际返回 PNG 的 image_size 为准。"
+                    "附带兼容的图片像素网格：四边数字以实际返回图片 的 image_size 为准。"
                     "若宿主二次缩图，须先把显示坐标还原到 image_size；点击携带本图 image_id。"
                     "滚动、弹窗或布局变化后重新 look。"
                 )

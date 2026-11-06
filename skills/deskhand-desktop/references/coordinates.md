@@ -23,13 +23,13 @@
 
 默认 grid 的固定逻辑刻度不受宿主二次缩图影响，不需要读取显示尺寸，也不需要使用 image_size、手算 DPI 或缩放比例。需要旧版自适应像素网格时显式设置 `grid_coordinates="image"`。scene_grid 是 A1–C3 粗网格，两者不同；粗格中心只有在任务明确指向该中心时才是目标，不能代表格中任意图标。
 
-inspect_region 的 region=[x,y,w,h] 有 image_id 时仍针对对应图片的实际 PNG 像素，无 image_id 时针对原始快照图。element、cell、region 三者只能选一个。
+inspect_region 的 region=[x,y,w,h] 有 image_id 时仍针对对应图片的实际图片像素，无 image_id 时针对原始快照图。element、cell、region 三者只能选一个。
 
 ## 用工具提供的落点
 
 已确认元素就是目标时直接点击编号。确需放大图坐标时，focus_point.image_x/image_y 是该图中的元素中心；取最近整数并检查 `0 <= x < image_size[0]`、`0 <= y < image_size[1]`，连同该图 image_id 点击。上张图的落点不能配下张图的编号。
 
-仅对图片像素模式，`image_size` 是服务端实际返回 PNG 的像素尺寸。若宿主再次缩放图片，直接传显示图坐标会造成点偏；已知显示尺寸时先按 `x × image_size[0] ÷ 显示宽度`、`y × image_size[1] ÷ 显示高度` 还原。不能确认实际像素尺寸时回到编号、默认逻辑网格或局部图，不凭聊天界面的显示大小猜换算。裁切后的图片不能直接配合原图 image_id 使用。
+仅对图片像素模式，`image_size` 是服务端实际返回图片 的像素尺寸。若宿主再次缩放图片，直接传显示图坐标会造成点偏；已知显示尺寸时先按 `x × image_size[0] ÷ 显示宽度`、`y × image_size[1] ÷ 显示高度` 还原。不能确认实际像素尺寸时回到编号、默认逻辑网格或局部图，不凭聊天界面的显示大小猜换算。裁切后的图片不能直接配合原图 image_id 使用。
 
 坐标点击的 `ok/dispatched` 只表示输入已派发；`effective=null` 或 `verdict=uncertain` 不代表命中，必须检查界面状态或精确读回。verify_point 提供屏幕落点周边的准星图供观察，不自动判定目标正确，不能替纯文本模型完成语义确认。
 

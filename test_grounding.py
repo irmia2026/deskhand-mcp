@@ -400,6 +400,37 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(b.type == "text" for b in blocks))
         self.assertIn("image_omitted", json.loads(blocks[0].text))
 
+    async def test_large_image_stays_below_stdio_line_limit(self):
+        import base64
+        import random
+
+        source = Image.frombytes(
+            "RGB", (1280, 800), random.Random(42).randbytes(1280 * 800 * 3))
+        buf = io.BytesIO()
+        source.save(buf, format="PNG")
+        png = buf.getvalue()
+        self.assertGreater(4 * ((len(png) + 2) // 3), 1_048_576)
+
+        async def action():
+            return {"ok": True, "image_size": [1280, 800], "_image": png}
+
+        controller = MagicMock()
+        controller.is_paused.return_value = False
+        controller.begin.return_value = 1
+        with patch.object(overlay, "get_overlay", return_value=controller):
+            blocks = await server._wrap(action)()
+
+        self.assertEqual(blocks[1].mime_type, "image/jpeg")
+        response = json.dumps({
+            "jsonrpc": "2.0", "id": 3,
+            "result": {"content": [
+                block.model_dump(mode="json", by_alias=True) for block in blocks
+            ]},
+        }, ensure_ascii=False, separators=(",", ":"))
+        self.assertLess(len(response.encode("utf-8")), 1_048_576)
+        with Image.open(io.BytesIO(base64.b64decode(blocks[1].data))) as image:
+            self.assertEqual(image.size, (1280, 800))
+
 
 class CancellationTests(unittest.TestCase):
     def test_cancelled_drag_always_releases_mouse(self):
